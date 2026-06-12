@@ -272,7 +272,7 @@ func TestConcurrentCreateCountsCreatingAgainstMaxSessions(t *testing.T) {
 
 	secondErr := <-errs
 	if secondErr == nil {
-		t.Fatalf("expected second create to fail while first is creating")
+		t.Fatalf("expected second create for a different key to fail while max sessions are reserved")
 	}
 	close(release)
 	firstErr := <-errs
@@ -284,35 +284,60 @@ func TestConcurrentCreateCountsCreatingAgainstMaxSessions(t *testing.T) {
 	}
 }
 
-func TestConcurrentSameKeyCreateIsRejectedWhileCreating(t *testing.T) {
+func TestConcurrentSameKeyCreateWaitsForInFlightCreate(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{{ID: "jp-a", Region: "jp", LatencyMS: 10, Available: true}})
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var factoryCalls int32
 	manager := NewManager(nodes, 2, func(key string) tunnel.Tunnel {
+		atomic.AddInt32(&factoryCalls, 1)
 		return &blockingStartTunnel{started: started, release: release}
 	})
 	strat := strategy.Strategy{Region: "jp", RotateMinutes: 15}
 
-	errs := make(chan error, 2)
+	results := make(chan struct {
+		sess sessionResult
+		err  error
+	}, 2)
 	go func() {
-		_, err := manager.GetOrCreate(context.Background(), strat)
-		errs <- err
+		sess, err := manager.GetOrCreate(context.Background(), strat)
+		results <- struct {
+			sess sessionResult
+			err  error
+		}{sess: sessionResult{key: sess.Strategy.Key()}, err: err}
 	}()
 	<-started
 
 	go func() {
-		_, err := manager.GetOrCreate(context.Background(), strat)
-		errs <- err
+		sess, err := manager.GetOrCreate(context.Background(), strat)
+		results <- struct {
+			sess sessionResult
+			err  error
+		}{sess: sessionResult{key: sess.Strategy.Key()}, err: err}
 	}()
-	secondErr := <-errs
-	if secondErr == nil {
-		t.Fatalf("expected duplicate create to fail while creating")
+	select {
+	case result := <-results:
+		t.Fatalf("second create returned before first create completed: %v", result.err)
+	case <-time.After(20 * time.Millisecond):
 	}
 	close(release)
-	if firstErr := <-errs; firstErr != nil {
-		t.Fatalf("expected first create to succeed, got %v", firstErr)
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err != nil {
+			t.Fatalf("GetOrCreate returned error: %v", result.err)
+		}
+		if result.sess.key != "jp-15" {
+			t.Fatalf("session key = %q, want jp-15", result.sess.key)
+		}
 	}
+	if factoryCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factoryCalls)
+	}
+}
+
+type sessionResult struct {
+	key string
 }
 
 func TestSwitchNowReturnsErrorWhenNoAlternativeNode(t *testing.T) {

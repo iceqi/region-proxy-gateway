@@ -23,7 +23,7 @@ func Default() Config {
 	return Config{
 		ProxyHost:            "0.0.0.0",
 		ProxyPort:            3000,
-		AdminHost:            "0.0.0.0",
+		AdminHost:            "127.0.0.1",
 		AdminPort:            8787,
 		AdminUsername:        "admin",
 		AdminPassword:        "change-me-admin",

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/strategy"
 )
@@ -31,6 +32,7 @@ func (s *Server) handleHTTP(conn net.Conn, firstByte byte) {
 		writeProxyAuthRequired(conn)
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 
 	if req.Method == http.MethodConnect {
 		s.handleHTTPConnect(conn, reader, req, strat)
@@ -90,11 +92,7 @@ func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request, strat strat
 	req.URL.Scheme = ""
 	req.URL.Host = ""
 
-	if err := req.Write(upstream); err != nil {
-		return
-	}
-
-	s.trackHTTPResponse(client, upstream, strat.Key(), target)
+	s.trackPlainHTTP(client, upstream, req, strat.Key(), target)
 }
 
 func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, strat strategy.Strategy, target string) (net.Conn, bool) {
@@ -136,7 +134,7 @@ func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *buf
 	}
 }
 
-func (s *Server) trackHTTPResponse(client net.Conn, upstream net.Conn, strategyKey string, target string) {
+func (s *Server) trackPlainHTTP(client net.Conn, upstream net.Conn, req *http.Request, strategyKey string, target string) {
 	clientAddr := ""
 	if client.RemoteAddr() != nil {
 		clientAddr = client.RemoteAddr().String()
@@ -145,19 +143,31 @@ func (s *Server) trackHTTPResponse(client net.Conn, upstream net.Conn, strategyK
 	var id string
 	if s.connections != nil {
 		id = s.connections.Start(clientAddr, "http", strategyKey, target)
+		defer s.connections.Finish(id)
 	}
-	resp, err := http.ReadResponse(bufio.NewReader(upstream), nil)
-	if err != nil {
+
+	upCounter := &countingWriter{writer: upstream}
+	if err := req.Write(upCounter); err != nil {
 		if s.connections != nil {
-			s.connections.Finish(id)
+			s.connections.AddBytes(id, upCounter.count, 0)
 		}
 		return
 	}
-	counter := &countingWriter{writer: client}
-	err = resp.Write(counter)
 	if s.connections != nil {
-		s.connections.AddBytes(id, 0, counter.count)
-		s.connections.Finish(id)
+		s.connections.AddBytes(id, upCounter.count, 0)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(upstream), nil)
+	if err != nil {
+		if s.connections != nil {
+			s.connections.AddBytes(id, upCounter.count, 0)
+		}
+		return
+	}
+	downCounter := &countingWriter{writer: client}
+	_ = resp.Write(downCounter)
+	if s.connections != nil {
+		s.connections.AddBytes(id, 0, downCounter.count)
 	}
 }
 

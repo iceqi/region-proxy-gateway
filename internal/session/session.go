@@ -27,13 +27,19 @@ type managedSession struct {
 	switching bool
 }
 
+type createState struct {
+	done chan struct{}
+	sess Session
+	err  error
+}
+
 type Manager struct {
 	mu         sync.RWMutex
 	nodes      *node.Store
 	maxActive  int
 	factory    Factory
 	sessions   map[string]*managedSession
-	creating   map[string]struct{}
+	creating   map[string]*createState
 	nextDevice int
 }
 
@@ -43,7 +49,7 @@ func NewManager(nodes *node.Store, maxActive int, factory Factory) *Manager {
 		maxActive: maxActive,
 		factory:   factory,
 		sessions:  make(map[string]*managedSession),
-		creating:  make(map[string]struct{}),
+		creating:  make(map[string]*createState),
 	}
 }
 
@@ -58,9 +64,14 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (Ses
 		entry.session.LastUsedAt = time.Now()
 		return entry.session, nil
 	}
-	if _, ok := m.creating[key]; ok {
+	if creating, ok := m.creating[key]; ok {
 		m.mu.Unlock()
-		return Session{}, fmt.Errorf("session %q is already being created", key)
+		select {
+		case <-creating.done:
+			return creating.sess, creating.err
+		case <-ctx.Done():
+			return Session{}, ctx.Err()
+		}
 	}
 	if m.maxActive > 0 && len(m.sessions)+len(m.creating) >= m.maxActive {
 		m.mu.Unlock()
@@ -68,26 +79,28 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (Ses
 	}
 	device := deviceName(m.nextDevice)
 	m.nextDevice++
-	m.creating[key] = struct{}{}
+	creating := &createState{done: make(chan struct{})}
+	m.creating[key] = creating
 	m.mu.Unlock()
 
 	defer func() {
 		m.mu.Lock()
 		delete(m.creating, key)
 		m.mu.Unlock()
+		close(creating.done)
 	}()
 
 	selected, ok := m.nodes.BestByRegion(strat.Region, "")
 	if !ok {
-		return Session{}, fmt.Errorf("no available node for region %q", strat.Region)
+		return m.finishCreate(creating, Session{}, fmt.Errorf("no available node for region %q", strat.Region))
 	}
 
 	tun := m.factory(key)
 	if tun == nil {
-		return Session{}, fmt.Errorf("session tunnel factory returned nil for %q", key)
+		return m.finishCreate(creating, Session{}, fmt.Errorf("session tunnel factory returned nil for %q", key))
 	}
 	if err := tun.Start(ctx, selected, tunnel.Options{Name: key, DeviceName: device}); err != nil {
-		return Session{}, fmt.Errorf("start tunnel for %q: %w", key, err)
+		return m.finishCreate(creating, Session{}, fmt.Errorf("start tunnel for %q: %w", key, err))
 	}
 
 	now := time.Now()
@@ -105,10 +118,16 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (Ses
 		existing.mu.Lock()
 		defer existing.mu.Unlock()
 		existing.session.LastUsedAt = time.Now()
-		return existing.session, nil
+		return m.finishCreate(creating, existing.session, nil)
 	}
 	m.sessions[key] = &managedSession{session: sess}
-	return sess, nil
+	return m.finishCreate(creating, sess, nil)
+}
+
+func (m *Manager) finishCreate(creating *createState, sess Session, err error) (Session, error) {
+	creating.sess = sess
+	creating.err = err
+	return sess, err
 }
 
 func (m *Manager) SwitchNow(ctx context.Context, key string) error {

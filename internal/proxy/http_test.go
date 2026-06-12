@@ -312,6 +312,65 @@ func TestPlainHTTPProxyKeepAliveResponseFinishesTracking(t *testing.T) {
 	}
 }
 
+func TestPlainHTTPProxyTracksUploadBytes(t *testing.T) {
+	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	tracker := connection.NewTracker()
+	server := NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, &fakeSessionProvider{sess: session.Session{Tunnel: tun}}, tracker)
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	tun.dialResult <- fakeDial{conn: upstream}
+
+	go server.handleHTTP(proxy, 'P')
+
+	done := make(chan connection.Record, 1)
+	go func() {
+		reader := bufio.NewReader(upstreamPeer)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		body, err := io.ReadAll(req.Body)
+		if err != nil || string(body) != "payload" {
+			return
+		}
+		_, _ = io.WriteString(upstreamPeer, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+
+		deadline := time.After(time.Second)
+		for {
+			select {
+			case <-deadline:
+				return
+			default:
+			}
+			records := tracker.List()
+			if len(records) == 1 && records[0].BytesUp > 0 {
+				done <- records[0]
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	if _, err := io.WriteString(client, "OST http://example.com/upload HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\nContent-Length: 7\r\n\r\npayload"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp := readHTTPResponse(t, client)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+
+	select {
+	case record := <-done:
+		if record.BytesUp == 0 {
+			t.Fatal("expected bytes_up to be tracked")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for upload byte tracking")
+	}
+}
+
 func newHTTPTestServer(provider SessionProvider) *Server {
 	return NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, provider, connection.NewTracker())
 }

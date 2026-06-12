@@ -7,6 +7,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Default config invalid: %v", err)
 	}
+	if cfg.AdminHost != "127.0.0.1" {
+		t.Fatalf("AdminHost = %q, want 127.0.0.1", cfg.AdminHost)
+	}
 	if cfg.ProxyPort != 3000 {
 		t.Fatalf("ProxyPort = %d, want 3000", cfg.ProxyPort)
 	}

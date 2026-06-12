@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/strategy"
 )
@@ -51,6 +52,7 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 		_, _ = conn.Write(socks5CommandRejectedResponse)
 		return
 	}
+	_ = conn.SetReadDeadline(time.Time{})
 
 	upstream, ok := s.dialSOCKS5Upstream(conn, context.Background(), strat, target)
 	if !ok {

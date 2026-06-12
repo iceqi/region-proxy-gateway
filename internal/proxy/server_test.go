@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -164,4 +165,50 @@ func TestServerServeReturnsWhenListenerCloses(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for Serve to exit")
 	}
+}
+
+func TestServerServeReturnsUnexpectedAcceptError(t *testing.T) {
+	wantErr := errors.New("accept failed")
+	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	listener := &failingListener{err: &net.OpError{Op: "accept", Net: "tcp", Err: wantErr}}
+
+	err := server.Serve(listener)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Serve error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestServerClosesIdleConnectionAfterHandshakeTimeout(t *testing.T) {
+	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	server.HandshakeTimeout = 20 * time.Millisecond
+	client, upstream := net.Pipe()
+	defer client.Close()
+
+	done := make(chan struct{}, 1)
+	go func() {
+		server.handleConn(upstream)
+		done <- struct{}{}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for idle connection to close")
+	}
+}
+
+type failingListener struct {
+	err error
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	return nil, l.err
+}
+
+func (l *failingListener) Close() error {
+	return nil
+}
+
+func (l *failingListener) Addr() net.Addr {
+	return &net.TCPAddr{}
 }

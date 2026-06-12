@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
 	"github.com/iceqi/region-proxy-gateway/internal/session"
@@ -22,6 +24,7 @@ type Server struct {
 	ProxyPassword        string
 	AllowedRegions       []string
 	AllowedRotateMinutes []int
+	HandshakeTimeout     time.Duration
 
 	sessions    SessionProvider
 	connections *connection.Tracker
@@ -51,7 +54,7 @@ func (s *Server) Serve(listener net.Listener) error {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
 			}
-			if opErr, ok := err.(*net.OpError); ok && !opErr.Temporary() {
+			if errors.Is(err, os.ErrClosed) {
 				return nil
 			}
 			return err
@@ -99,15 +102,24 @@ func containsInt(items []int, want int) bool {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
+	if timeout := s.handshakeTimeout(); timeout > 0 {
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	}
 	var first [1]byte
 	if _, err := conn.Read(first[:]); err != nil {
 		_ = conn.Close()
 		return
 	}
-
 	if first[0] == 0x05 {
 		s.socks5Handler(conn)
 		return
 	}
 	s.httpHandler(conn, first[0])
+}
+
+func (s *Server) handshakeTimeout() time.Duration {
+	if s.HandshakeTimeout > 0 {
+		return s.HandshakeTimeout
+	}
+	return 10 * time.Second
 }
