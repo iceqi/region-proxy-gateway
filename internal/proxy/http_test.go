@@ -191,6 +191,45 @@ func TestPlainHTTPProxyRequestForwardsOriginForm(t *testing.T) {
 	}
 }
 
+func TestPlainHTTPProxyResponseDoesNotWaitForClientClose(t *testing.T) {
+	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	tun.dialResult <- fakeDial{conn: upstream}
+
+	go server.handleHTTP(proxy, 'G')
+
+	go func() {
+		reader := bufio.NewReader(upstreamPeer)
+		_, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		_, _ = io.WriteString(upstreamPeer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+	}()
+
+	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		done <- readHTTPResponse(t, client)
+	}()
+
+	select {
+	case resp := <-done:
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for plain HTTP response")
+	}
+}
+
 func newHTTPTestServer(provider SessionProvider) *Server {
 	return NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, provider, connection.NewTracker())
 }

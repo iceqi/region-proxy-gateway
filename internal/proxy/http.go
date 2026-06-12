@@ -94,7 +94,7 @@ func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request, strat strat
 		return
 	}
 
-	s.trackAndRelay(client, upstream, nil, strat.Key(), target)
+	s.trackHTTPResponse(client, upstream, strat.Key(), target)
 }
 
 func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, strat strategy.Strategy, target string) (net.Conn, bool) {
@@ -132,6 +132,23 @@ func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *buf
 	up, down := relay(client, upstream, buffered)
 	if s.connections != nil {
 		s.connections.AddBytes(id, up, down)
+		s.connections.Finish(id)
+	}
+}
+
+func (s *Server) trackHTTPResponse(client net.Conn, upstream net.Conn, strategyKey string, target string) {
+	clientAddr := ""
+	if client.RemoteAddr() != nil {
+		clientAddr = client.RemoteAddr().String()
+	}
+
+	var id string
+	if s.connections != nil {
+		id = s.connections.Start(clientAddr, "http", strategyKey, target)
+	}
+	down, _ := io.Copy(client, upstream)
+	if s.connections != nil {
+		s.connections.AddBytes(id, 0, down)
 		s.connections.Finish(id)
 	}
 }
