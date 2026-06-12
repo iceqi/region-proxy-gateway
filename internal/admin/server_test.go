@@ -78,6 +78,9 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	if body.Channels[0].ProxyAuthHTTP != "http://alice:secret@0.0.0.0:3000" {
 		t.Fatalf("auth http = %q", body.Channels[0].ProxyAuthHTTP)
 	}
+	if body.Channels[0].CurrentNode.IP == "" && body.Channels[0].CurrentNode.Hostname == "" {
+		t.Fatalf("channel current node should include exit address: %+v", body.Channels[0].CurrentNode)
+	}
 }
 
 func TestNodesCanFilterByRegion(t *testing.T) {
@@ -283,7 +286,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "出口 IP", "channelExitAddress"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
@@ -348,7 +351,7 @@ func TestAdminAuthProtectsPanelAndAPI(t *testing.T) {
 
 func TestSwitchChannelToNode(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
-	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", Available: true}))
+	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", IP: "203.0.113.22", Available: true}))
 	server := NewServer(manager, nodes, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels/jp-3000/switch", bytes.NewBufferString(`{"node_id":"jp-2"}`))
@@ -365,6 +368,49 @@ func TestSwitchChannelToNode(t *testing.T) {
 	}
 	if snapshot.CurrentNodeID != "jp-2" {
 		t.Fatalf("current node = %q, want jp-2", snapshot.CurrentNodeID)
+	}
+}
+
+func TestSwitchChannelToNodeTriggersRestartWhenConfigured(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", IP: "203.0.113.22", Available: true}))
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:            "jp-3000",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    3000,
+		Region:        "jp",
+		SelectionMode: config.SelectionAuto,
+		Enabled:       true,
+	}}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	restarted := false
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithRestarter(func(ctx context.Context) error {
+		restarted = true
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels/jp-3000/switch", bytes.NewBufferString(`{"node_id":"jp-2"}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !restarted {
+		t.Fatalf("expected switching node to trigger restart")
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Channels) != 1 || loaded.Channels[0].SelectionMode != config.SelectionManual || loaded.Channels[0].ManualNodeID != "jp-2" {
+		t.Fatalf("channel config after switch = %+v, want manual jp-2", loaded.Channels)
 	}
 }
 
@@ -417,6 +463,33 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	}
 	if len(body.Channels) != 2 || body.Channels[1].ID != "us-3001" {
 		t.Fatalf("channels view = %+v, want newly configured channel visible before restart", body.Channels)
+	}
+}
+
+func TestSaveChannelTriggersRestartWhenConfigured(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	restarted := false
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithRestarter(func(ctx context.Context) error {
+		restarted = true
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"id":"us-3001","listen_host":"0.0.0.0","listen_port":3001,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !restarted {
+		t.Fatalf("expected saving channel to trigger restart")
 	}
 }
 
@@ -626,7 +699,7 @@ func TestDeleteLastChannelPersistsEmptyConfig(t *testing.T) {
 func newAdminTestManager(t *testing.T) (*node.Store, *channel.Manager) {
 	t.Helper()
 	nodes := node.NewStore()
-	nodes.Replace([]node.Node{{ID: "jp-1", Region: "jp", Available: true}})
+	nodes.Replace([]node.Node{{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Available: true}})
 	manager := channel.NewManager(channel.Config{
 		Channels: []config.Channel{{
 			ID:            "jp-3000",

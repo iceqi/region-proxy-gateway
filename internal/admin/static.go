@@ -267,6 +267,7 @@ const indexHTML = `<!doctype html>
             { title: '地区', dataIndex: 'region', width: 120, customRender: ({ record }) => this.regionText(record.region) + '（' + record.region + '）' },
             { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
+            { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
             { title: '连接方式', key: 'connect', width: 560, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
             { title: '操作', key: 'actions', width: 170, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
@@ -427,10 +428,10 @@ const indexHTML = `<!doctype html>
           const channel = Object.assign({}, this.channelForm, { region: String(this.channelForm.region || '').toLowerCase(), original_id: this.channelDialog.originalID });
           if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
           try {
-            await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
-            message.success('通道已保存，新增端口需要重启服务生效');
+            const body = await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
+            this.noticeRestartResult(body, '通道已保存，服务会自动重启生效');
             this.channelDialog.open = false;
-            await this.load(false);
+            if (!body.restart_scheduled) await this.load(false);
           } catch (err) {
             message.error(err.message);
           }
@@ -459,9 +460,9 @@ const indexHTML = `<!doctype html>
           if (!channelID) return message.warning('请先选择通道');
           if (!nodeID) return message.warning('请先选择节点');
           try {
-            await this.request('channels/' + encodeURIComponent(channelID) + '/switch', { method: 'POST', body: JSON.stringify({ node_id: nodeID }) });
-            message.success('已切换节点');
-            await this.load(false);
+            const body = await this.request('channels/' + encodeURIComponent(channelID) + '/switch', { method: 'POST', body: JSON.stringify({ node_id: nodeID }) });
+            this.noticeRestartResult(body, '已切换节点，服务会自动重启生效');
+            if (!body.restart_scheduled) await this.load(false);
           } catch (err) {
             message.error(err.message);
           }
@@ -474,9 +475,9 @@ const indexHTML = `<!doctype html>
             okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
-              await this.request('channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
-              message.success('通道已删除，需要重启服务生效');
-              await this.load(false);
+              const body = await this.request('channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
+              this.noticeRestartResult(body, '通道已删除，服务会自动重启生效');
+              if (!body.restart_scheduled) await this.load(false);
             }
           });
         },
@@ -490,6 +491,15 @@ const indexHTML = `<!doctype html>
         },
         channelsByRegion(region) {
           return this.channels.filter(ch => ch.region === region && ch.enabled);
+        },
+        channelExitAddress(channel) {
+          const current = channel.current_node || {};
+          return current.ip || current.hostname || '-';
+        },
+        noticeRestartResult(body, fallback) {
+          if (body && body.restart_error) return message.warning(fallback + '，但自动重启失败：' + body.restart_error);
+          if (body && body.restart_scheduled) return message.success(fallback);
+          return message.success(fallback + '，当前环境未配置自动重启');
         },
         connectionLine(label, value) {
           return h('div', { class: 'connection-line' }, [

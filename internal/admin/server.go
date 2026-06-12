@@ -244,12 +244,22 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_id is required"})
 		return
 	}
-	if err := s.channels.SwitchToNode(context.Background(), channelID, strings.TrimSpace(body.NodeID)); err != nil {
+	nodeID := strings.TrimSpace(body.NodeID)
+	if err := s.channels.SwitchToNode(context.Background(), channelID, nodeID); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	snapshot, _ := s.channels.Snapshot(channelID)
-	s.writeJSON(w, http.StatusOK, map[string]any{"channel": snapshot})
+	if err := s.persistManualNode(r.Context(), snapshot, nodeID); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	restartScheduled, restartError := s.scheduleRestart()
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"channel":           snapshot,
+		"restart_scheduled": restartScheduled,
+		"restart_error":     restartError,
+	})
 }
 
 func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +294,13 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+	restartScheduled, restartError := s.scheduleRestart()
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"config":            cfg,
+		"restart_required":  true,
+		"restart_scheduled": restartScheduled,
+		"restart_error":     restartError,
+	})
 }
 
 func (s *Server) handleRefreshNodes(w http.ResponseWriter, r *http.Request) {
@@ -444,7 +460,10 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"config":           cfg,
+		"restart_required": true,
+	})
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -467,7 +486,13 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+	restartScheduled, restartError := s.scheduleRestart()
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"config":            cfg,
+		"restart_required":  true,
+		"restart_scheduled": restartScheduled,
+		"restart_error":     restartError,
+	})
 }
 
 func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -480,6 +505,40 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) scheduleRestart() (bool, string) {
+	if s.restarter == nil {
+		return false, ""
+	}
+	if err := s.restarter(context.Background()); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (s *Server) persistManualNode(ctx context.Context, snapshot channel.Snapshot, nodeID string) error {
+	ch := config.Channel{
+		ID:            snapshot.ID,
+		ListenHost:    snapshot.ListenHost,
+		ListenPort:    snapshot.ListenPort,
+		Region:        snapshot.Region,
+		RotateMinutes: snapshot.RotateMinutes,
+		SelectionMode: config.SelectionManual,
+		ManualNodeID:  nodeID,
+		Enabled:       snapshot.Enabled,
+	}
+	if s.storage != nil {
+		return s.storage.SaveChannel(ctx, snapshot.ID, ch)
+	}
+	if s.configPath == "" {
+		return nil
+	}
+	_, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
+		cfg.Channels = saveChannelInConfig(cfg.Channels, snapshot.ID, ch)
+		return cfg, nil
+	})
+	return err
 }
 
 func (s *Server) updateConfig(update func(config.Config) (config.Config, error)) (config.Config, error) {
