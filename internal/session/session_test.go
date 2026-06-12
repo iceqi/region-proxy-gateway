@@ -13,11 +13,13 @@ import (
 
 type recordingTunnel struct {
 	startedWith node.Node
+	options     tunnel.Options
 	switchedTo  node.Node
 }
 
 func (t *recordingTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
 	t.startedWith = n
+	t.options = opts
 	return nil
 }
 
@@ -61,6 +63,10 @@ func TestGetOrCreateReusesSameSessionForStrategy(t *testing.T) {
 	}
 	if !second.LastUsedAt.After(second.CreatedAt) {
 		t.Fatalf("expected reuse to update LastUsedAt")
+	}
+	rec := second.Tunnel.(*recordingTunnel)
+	if rec.options.Name != "jp-15" || rec.options.DeviceName != "rpg0" {
+		t.Fatalf("tunnel options = %+v, want name jp-15 and device rpg0", rec.options)
 	}
 }
 

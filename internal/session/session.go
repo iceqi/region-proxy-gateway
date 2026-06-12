@@ -14,11 +14,11 @@ import (
 type Factory func(key string) tunnel.Tunnel
 
 type Session struct {
-	Strategy   strategy.Strategy
-	Node       node.Node
-	CreatedAt  time.Time
-	LastUsedAt time.Time
-	Tunnel     tunnel.Tunnel
+	Strategy   strategy.Strategy `json:"strategy"`
+	Node       node.Node         `json:"node"`
+	CreatedAt  time.Time         `json:"created_at"`
+	LastUsedAt time.Time         `json:"last_used_at"`
+	Tunnel     tunnel.Tunnel     `json:"-"`
 }
 
 type Manager struct {
@@ -61,7 +61,7 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (*Se
 	if tun == nil {
 		return nil, fmt.Errorf("session tunnel factory returned nil for %q", key)
 	}
-	if err := tun.Start(ctx, selected, tunnel.Options{Name: key}); err != nil {
+	if err := tun.Start(ctx, selected, tunnel.Options{Name: key, DeviceName: deviceName(len(m.sessions))}); err != nil {
 		return nil, fmt.Errorf("start tunnel for %q: %w", key, err)
 	}
 
@@ -118,4 +118,8 @@ func (m *Manager) ActiveCount() int {
 	defer m.mu.RUnlock()
 
 	return len(m.sessions)
+}
+
+func deviceName(index int) string {
+	return fmt.Sprintf("rpg%d", index)
 }
