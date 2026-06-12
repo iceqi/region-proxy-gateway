@@ -21,6 +21,7 @@ type Status struct {
 	Ready     bool      `json:"ready"`
 	StartedAt time.Time `json:"started_at"`
 	Error     string    `json:"error"`
+	PID       int       `json:"pid,omitempty"`
 }
 
 type Tunnel interface {

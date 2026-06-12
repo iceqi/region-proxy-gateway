@@ -2,8 +2,12 @@ package tunnel
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/iceqi/region-proxy-gateway/internal/node"
 )
 
 func TestOpenVPNCommandIncludesCoreOptions(t *testing.T) {
@@ -50,22 +54,145 @@ func TestOpenVPNProcessStarterReceivesCommand(t *testing.T) {
 	}
 }
 
+func TestOpenVPNTunnelStartWritesConfigAndStartsProcess(t *testing.T) {
+	starter := &recordingProcessStarter{}
+	dir := t.TempDir()
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir: dir,
+		Command: "/usr/sbin/openvpn",
+		Starter: starter,
+	})
+
+	n := node.Node{ID: "jp-1", Region: "jp", OpenVPN: "client\nremote vpn-jp.example.net 1194 udp\n"}
+	err := tun.Start(context.Background(), n, Options{Name: "jp-10", DeviceName: "rpg0"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "sessions", "jp-10", "client.ovpn")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	if string(raw) != n.OpenVPN {
+		t.Fatalf("config file = %q, want node openvpn config", string(raw))
+	}
+	if len(starter.commands) != 1 {
+		t.Fatalf("starter command count = %d, want 1", len(starter.commands))
+	}
+	wantCommand := OpenVPNCommand("/usr/sbin/openvpn", configPath, "rpg0")
+	if !reflect.DeepEqual(starter.commands[0], wantCommand) {
+		t.Fatalf("starter command = %#v, want %#v", starter.commands[0], wantCommand)
+	}
+	status := tun.Status()
+	if !status.Ready || status.NodeID != "jp-1" || status.Name != "jp-10" || status.PID != 1234 {
+		t.Fatalf("status = %+v, want ready jp-1 pid 1234", status)
+	}
+}
+
+func TestOpenVPNTunnelStartRejectsMissingConfig(t *testing.T) {
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: &recordingProcessStarter{}})
+	err := tun.Start(context.Background(), node.Node{ID: "jp-1", Region: "jp"}, Options{Name: "jp-10"})
+	if err == nil {
+		t.Fatalf("expected missing OpenVPN config error")
+	}
+	status := tun.Status()
+	if status.Error == "" {
+		t.Fatalf("expected status error after missing config")
+	}
+}
+
+func TestOpenVPNTunnelDialReturnsRoutingError(t *testing.T) {
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: &recordingProcessStarter{}})
+	_, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
+	if err == nil {
+		t.Fatalf("expected routing isolation error")
+	}
+	if got := err.Error(); got != "openvpn dial requires routing isolation / namespace not implemented" {
+		t.Fatalf("DialContext error = %q, want routing isolation error", got)
+	}
+}
+
+func TestOpenVPNTunnelStopTerminatesProcess(t *testing.T) {
+	process := &recordingProcess{}
+	starter := &singleProcessStarter{process: process}
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: starter})
+	err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-10"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	if err := tun.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
+	}
+	if !process.terminated {
+		t.Fatalf("expected process to be terminated")
+	}
+	if !process.waited {
+		t.Fatalf("expected process to be waited")
+	}
+	if tun.Status().Ready {
+		t.Fatalf("expected status not ready after stop")
+	}
+}
+
+func TestOpenVPNTunnelSwitchRestartsWithNewNode(t *testing.T) {
+	starter := &recordingProcessStarter{}
+	dir := t.TempDir()
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: dir, Starter: starter})
+	first := node.Node{ID: "jp-1", OpenVPN: "client\nremote first 1194 udp\n"}
+	second := node.Node{ID: "jp-2", OpenVPN: "client\nremote second 1194 udp\n"}
+	if err := tun.Start(context.Background(), first, Options{Name: "jp-10", DeviceName: "rpg0"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	firstProcess := starter.processes[0]
+
+	if err := tun.Switch(context.Background(), second); err != nil {
+		t.Fatalf("Switch returned error: %v", err)
+	}
+
+	if !firstProcess.terminated || !firstProcess.waited {
+		t.Fatalf("expected first process to be stopped before switch")
+	}
+	if len(starter.commands) != 2 {
+		t.Fatalf("starter command count = %d, want 2", len(starter.commands))
+	}
+	status := tun.Status()
+	if status.NodeID != "jp-2" || !status.Ready {
+		t.Fatalf("status = %+v, want ready jp-2", status)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "sessions", "jp-10", "client.ovpn"))
+	if err != nil {
+		t.Fatalf("read switched config: %v", err)
+	}
+	if string(raw) != second.OpenVPN {
+		t.Fatalf("config file = %q, want second node config", string(raw))
+	}
+}
+
 type recordingProcessStarter struct {
-	commands [][]string
+	commands  [][]string
+	processes []*recordingProcess
 }
 
 func (s *recordingProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
 	s.commands = append(s.commands, append([]string(nil), command...))
-	return &recordingProcess{}, nil
+	process := &recordingProcess{}
+	s.processes = append(s.processes, process)
+	return process, nil
 }
 
 type recordingProcess struct {
 	terminated bool
 	killed     bool
+	waited     bool
 }
 
-func (p *recordingProcess) PID() int    { return 1234 }
-func (p *recordingProcess) Wait() error { return nil }
+func (p *recordingProcess) PID() int { return 1234 }
+func (p *recordingProcess) Wait() error {
+	p.waited = true
+	return nil
+}
 func (p *recordingProcess) Terminate() error {
 	p.terminated = true
 	return nil
@@ -73,4 +200,12 @@ func (p *recordingProcess) Terminate() error {
 func (p *recordingProcess) Kill() error {
 	p.killed = true
 	return nil
+}
+
+type singleProcessStarter struct {
+	process OpenVPNProcess
+}
+
+func (s *singleProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
+	return s.process, nil
 }
