@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
@@ -186,6 +187,9 @@ func TestIndexReturnsHTML(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("content type = %q, want html", got)
+	}
+	if !strings.Contains(rec.Body.String(), "window.location.hostname") {
+		t.Fatalf("admin html should generate proxy addresses from browser host")
 	}
 }
 

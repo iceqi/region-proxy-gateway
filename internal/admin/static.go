@@ -20,7 +20,7 @@ const indexHTML = `<!doctype html>
     .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: 0; }
     .brand span { color: #697386; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .page { max-width: 1480px; margin: 0 auto; padding: 18px; }
-    .stats { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .stats { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 12px; margin-bottom: 14px; }
     .stat { background: #fff; border: 1px solid #e6eaf0; border-radius: 8px; padding: 13px 14px; }
     .stat-label { color: #697386; font-size: 12px; margin-bottom: 6px; }
     .stat-value { font-size: 22px; font-weight: 700; }
@@ -71,6 +71,7 @@ const indexHTML = `<!doctype html>
         <div class="stat"><div class="stat-label">节点</div><div class="stat-value">{{ filteredNodes.length }} / {{ nodes.length }}</div></div>
         <div class="stat"><div class="stat-label">在线连接</div><div class="stat-value">{{ connections.length }}</div></div>
         <div class="stat"><div class="stat-label">节点更新间隔</div><div class="stat-value">{{ settings.node_refresh_interval || '-' }}</div></div>
+        <div class="stat"><div class="stat-label">代理主机</div><div class="stat-value" style="font-size:16px">{{ proxyHost }}</div></div>
       </section>
 
       <a-tabs v-model:active-key="activeTab">
@@ -166,8 +167,8 @@ const indexHTML = `<!doctype html>
                   </template>
                   <template v-else-if="column.key === 'connect'">
                     <div class="connection-box">
-                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono">{{ record.proxy_auth_http || record.proxy_url_http }}</code><a-button size="small" @click="copyText(record.proxy_auth_http || record.proxy_url_http)">复制</a-button></div>
-                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono">{{ record.proxy_auth_socks5 || record.proxy_url_socks5 }}</code><a-button size="small" @click="copyText(record.proxy_auth_socks5 || record.proxy_url_socks5)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono">{{ proxyAddress(record, 'http') }}</code><a-button size="small" @click="copyText(proxyAddress(record, 'http'))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono">{{ proxyAddress(record, 'socks5') }}</code><a-button size="small" @click="copyText(proxyAddress(record, 'socks5'))">复制</a-button></div>
                     </div>
                   </template>
                   <template v-else-if="column.key === 'actions'">
@@ -277,6 +278,7 @@ const indexHTML = `<!doctype html>
       data() {
         return {
           apiBase,
+          proxyHost: window.location.hostname || 'SERVER_IP',
           activeTab: 'nodes',
           loading: false,
           updatingNodes: false,
@@ -503,6 +505,22 @@ const indexHTML = `<!doctype html>
         copyText(text) {
           if (!text) return;
           navigator.clipboard.writeText(text).then(() => message.success('已复制')).catch(() => message.warning('浏览器不允许自动复制'));
+        },
+        proxyAddress(channel, scheme) {
+          const source = scheme === 'socks5'
+            ? (channel.proxy_auth_socks5 || channel.proxy_url_socks5 || '')
+            : (channel.proxy_auth_http || channel.proxy_url_http || '');
+          if (!source) return '';
+          try {
+            const url = new URL(source);
+            if (url.hostname === '0.0.0.0' || url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::') {
+              url.hostname = window.location.hostname || url.hostname;
+            }
+            return url.toString();
+          } catch (err) {
+            const port = channel.listen_port || '';
+            return scheme + '://' + this.proxyHost + (port ? ':' + port : '');
+          }
         },
         ipTypeText(type) {
           return ({ residential: '住宅/家宽', hosting: '机房', mobile: '移动网', proxy: '代理' })[type] || type || '';
