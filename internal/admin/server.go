@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/storage"
 )
@@ -139,6 +141,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleProbeNodes(w, r)
 		return
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/deep-tests" {
+		s.handleEnqueueDeepTests(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/nodes/") && strings.HasSuffix(r.URL.Path, "/probe") {
 		s.handleProbeNode(w, r)
 		return
@@ -182,8 +188,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	case "/api/nodes":
 		s.writeJSON(w, http.StatusOK, map[string]any{
-			"nodes": s.nodeList(r.URL.Query().Get("region")),
+			"nodes": s.nodeViewList(r.URL.Query().Get("region")),
 		})
+	case "/api/deep-tests/status":
+		s.handleDeepTestStatus(w, r)
 	default:
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -316,7 +324,7 @@ func (s *Server) handleRefreshNodes(w http.ResponseWriter, r *http.Request) {
 	if s.nodes != nil {
 		s.nodes.Replace(nodes)
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+	s.writeJSON(w, http.StatusOK, map[string]any{"nodes": s.nodeViewsFrom(nodes, "")})
 }
 
 func (s *Server) handleProbeNode(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +424,49 @@ func (s *Server) handleProbeNodes(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"count": len(checked), "nodes": checked, "missing": missing})
 }
 
+func (s *Server) handleEnqueueDeepTests(w http.ResponseWriter, r *http.Request) {
+	if s.storage == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "storage is not configured"})
+		return
+	}
+	var body struct {
+		NodeIDs []string `json:"node_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	nodeIDs := cleanNodeIDsKeepingDuplicates(body.NodeIDs, 500)
+	if len(nodeIDs) == 0 {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_ids is required"})
+		return
+	}
+	summary, err := s.storage.EnqueueDeepTestJobs(r.Context(), nodeIDs)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	stats, err := s.storage.DeepTestQueueStats(r.Context())
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "stats": stats})
+}
+
+func (s *Server) handleDeepTestStatus(w http.ResponseWriter, r *http.Request) {
+	if s.storage == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "storage is not configured"})
+		return
+	}
+	stats, err := s.storage.DeepTestQueueStats(r.Context())
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"stats": stats})
+}
+
 func cleanNodeIDs(ids []string, limit int) []string {
 	seen := make(map[string]struct{}, len(ids))
 	cleaned := make([]string, 0, len(ids))
@@ -428,6 +479,21 @@ func cleanNodeIDs(ids []string, limit int) []string {
 			continue
 		}
 		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+		if limit > 0 && len(cleaned) >= limit {
+			break
+		}
+	}
+	return cleaned
+}
+
+func cleanNodeIDsKeepingDuplicates(ids []string, limit int) []string {
+	cleaned := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
 		cleaned = append(cleaned, id)
 		if limit > 0 && len(cleaned) >= limit {
 			break
@@ -696,6 +762,101 @@ func (s *Server) nodeList(region string) []node.Node {
 		}
 	}
 	return filtered
+}
+
+type nodeView struct {
+	ID           string        `json:"id"`
+	Region       string        `json:"region"`
+	Country      string        `json:"country"`
+	IP           string        `json:"ip"`
+	Hostname     string        `json:"hostname"`
+	Port         int           `json:"port"`
+	Proto        string        `json:"proto"`
+	LatencyMS    int           `json:"latency_ms"`
+	Speed        int64         `json:"speed"`
+	Available    bool          `json:"available"`
+	LastTestedAt time.Time     `json:"last_tested_at"`
+	FailReason   string        `json:"fail_reason"`
+	Owner        string        `json:"owner"`
+	ASN          string        `json:"asn"`
+	ASName       string        `json:"as_name"`
+	Location     string        `json:"location"`
+	IPType       string        `json:"ip_type"`
+	Quality      string        `json:"quality"`
+	PurityScore  int           `json:"purity_score"`
+	ProbeStatus  string        `json:"probe_status"`
+	ProbeMessage string        `json:"probe_message"`
+	ProbedAt     time.Time     `json:"probed_at"`
+	DeepTest     *deepTestView `json:"deep_test,omitempty"`
+}
+
+type deepTestView struct {
+	Status      string    `json:"status"`
+	ExitIP      string    `json:"exit_ip"`
+	ExitCountry string    `json:"exit_country"`
+	ConnectMS   int       `json:"connect_ms"`
+	TestedAt    time.Time `json:"tested_at"`
+	FailReason  string    `json:"fail_reason"`
+}
+
+func (s *Server) nodeViewList(region string) []nodeView {
+	return s.nodeViewsFrom(s.nodeList(region), "")
+}
+
+func (s *Server) nodeViewsFrom(nodes []node.Node, region string) []nodeView {
+	region = strings.ToLower(strings.TrimSpace(region))
+	deepResults := map[string]deeptest.Result{}
+	if s.storage != nil {
+		if results, err := s.storage.DeepTestResults(context.Background()); err == nil {
+			deepResults = results
+		}
+	}
+	views := make([]nodeView, 0, len(nodes))
+	for _, n := range nodes {
+		if region != "" && n.Region != region {
+			continue
+		}
+		view := compactNode(n)
+		if result, ok := deepResults[n.ID]; ok {
+			view.DeepTest = &deepTestView{
+				Status:      result.Status,
+				ExitIP:      result.ExitIP,
+				ExitCountry: result.ExitCountry,
+				ConnectMS:   result.ConnectMS,
+				TestedAt:    result.TestedAt,
+				FailReason:  result.FailReason,
+			}
+		}
+		views = append(views, view)
+	}
+	return views
+}
+
+func compactNode(n node.Node) nodeView {
+	return nodeView{
+		ID:           n.ID,
+		Region:       n.Region,
+		Country:      n.Country,
+		IP:           n.IP,
+		Hostname:     n.Hostname,
+		Port:         n.Port,
+		Proto:        n.Proto,
+		LatencyMS:    n.LatencyMS,
+		Speed:        n.Speed,
+		Available:    n.Available,
+		LastTestedAt: n.LastTestedAt,
+		FailReason:   n.FailReason,
+		Owner:        n.Owner,
+		ASN:          n.ASN,
+		ASName:       n.ASName,
+		Location:     n.Location,
+		IPType:       n.IPType,
+		Quality:      n.Quality,
+		PurityScore:  n.PurityScore,
+		ProbeStatus:  n.ProbeStatus,
+		ProbeMessage: n.ProbeMessage,
+		ProbedAt:     n.ProbedAt,
+	}
 }
 
 type settingsView struct {

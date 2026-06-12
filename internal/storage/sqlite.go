@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -79,6 +81,34 @@ func (s *Store) migrate(ctx context.Context) error {
 			quality TEXT NOT NULL,
 			purity_score INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS deep_test_jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			node_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			fail_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_deep_test_jobs_status_created ON deep_test_jobs(status, created_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_test_jobs_pending_node ON deep_test_jobs(node_id) WHERE status IN ('pending', 'running')`,
+		`CREATE TABLE IF NOT EXISTS deep_test_results (
+			node_id TEXT PRIMARY KEY,
+			status TEXT NOT NULL,
+			exit_ip TEXT NOT NULL,
+			exit_country TEXT NOT NULL,
+			connect_ms INTEGER NOT NULL,
+			tested_at TEXT NOT NULL,
+			fail_reason TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS channel_node_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id TEXT NOT NULL,
+			node_id TEXT NOT NULL,
+			exit_ip TEXT NOT NULL,
+			connected_at TEXT NOT NULL,
+			switched_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channel_node_history_channel_switched ON channel_node_history(channel_id, switched_at)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -227,6 +257,257 @@ func (s *Store) ListNodes(ctx context.Context) ([]node.Node, error) {
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
+}
+
+type ChannelNodeUse struct {
+	ChannelID   string
+	NodeID      string
+	ExitIP      string
+	ConnectedAt time.Time
+	SwitchedAt  time.Time
+}
+
+func (s *Store) EnqueueDeepTestJobs(ctx context.Context, nodeIDs []string) (deeptest.EnqueueSummary, error) {
+	now := encodeTime(time.Now())
+	summary := deeptest.EnqueueSummary{}
+	seen := map[string]struct{}{}
+	for _, nodeID := range nodeIDs {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID == "" {
+			summary.Skipped++
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			summary.Skipped++
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		res, err := s.db.ExecContext(ctx, `
+			INSERT OR IGNORE INTO deep_test_jobs(node_id, status, created_at, updated_at)
+			VALUES(?, ?, ?, ?)
+		`, nodeID, deeptest.StatusPending, now, now)
+		if err != nil {
+			return summary, err
+		}
+		affected, _ := res.RowsAffected()
+		if affected == 0 {
+			summary.Skipped++
+		} else {
+			summary.Created++
+		}
+	}
+	return summary, nil
+}
+
+func (s *Store) ClaimDeepTestJobs(ctx context.Context, limit int, now time.Time) ([]deeptest.Job, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, node_id, status, created_at, updated_at
+		FROM deep_test_jobs
+		WHERE status = ?
+		ORDER BY created_at, id
+		LIMIT ?
+	`, deeptest.StatusPending, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	jobs := []deeptest.Job{}
+	for rows.Next() {
+		var job deeptest.Job
+		var createdAt, updatedAt string
+		if err := rows.Scan(&job.ID, &job.NodeID, &job.Status, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		job.CreatedAt = decodeTime(createdAt)
+		job.UpdatedAt = decodeTime(updatedAt)
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i := range jobs {
+		if _, err := tx.ExecContext(ctx, `UPDATE deep_test_jobs SET status = ?, updated_at = ? WHERE id = ?`, deeptest.StatusRunning, encodeTime(now), jobs[i].ID); err != nil {
+			return nil, err
+		}
+		jobs[i].Status = deeptest.StatusRunning
+		jobs[i].UpdatedAt = now
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
+func (s *Store) CompleteDeepTestJob(ctx context.Context, jobID int64, result deeptest.Result) error {
+	if result.TestedAt.IsZero() {
+		result.TestedAt = time.Now()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO deep_test_results(node_id, status, exit_ip, exit_country, connect_ms, tested_at, fail_reason)
+		VALUES(?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(node_id) DO UPDATE SET
+			status = excluded.status,
+			exit_ip = excluded.exit_ip,
+			exit_country = excluded.exit_country,
+			connect_ms = excluded.connect_ms,
+			tested_at = excluded.tested_at,
+			fail_reason = excluded.fail_reason
+	`, result.NodeID, result.Status, result.ExitIP, result.ExitCountry, result.ConnectMS, encodeTime(result.TestedAt), result.FailReason); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE deep_test_jobs SET status = ?, updated_at = ?, fail_reason = ? WHERE id = ?`, result.Status, encodeTime(result.TestedAt), result.FailReason, jobID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) DeepTestResult(ctx context.Context, nodeID string) (deeptest.Result, bool, error) {
+	var result deeptest.Result
+	var testedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT node_id, status, exit_ip, exit_country, connect_ms, tested_at, fail_reason
+		FROM deep_test_results
+		WHERE node_id = ?
+	`, nodeID).Scan(&result.NodeID, &result.Status, &result.ExitIP, &result.ExitCountry, &result.ConnectMS, &testedAt, &result.FailReason)
+	if err == sql.ErrNoRows {
+		return deeptest.Result{}, false, nil
+	}
+	if err != nil {
+		return deeptest.Result{}, false, err
+	}
+	result.TestedAt = decodeTime(testedAt)
+	return result, true, nil
+}
+
+func (s *Store) DeepTestResults(ctx context.Context) (map[string]deeptest.Result, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT node_id, status, exit_ip, exit_country, connect_ms, tested_at, fail_reason
+		FROM deep_test_results
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := map[string]deeptest.Result{}
+	for rows.Next() {
+		var result deeptest.Result
+		var testedAt string
+		if err := rows.Scan(&result.NodeID, &result.Status, &result.ExitIP, &result.ExitCountry, &result.ConnectMS, &testedAt, &result.FailReason); err != nil {
+			return nil, err
+		}
+		result.TestedAt = decodeTime(testedAt)
+		results[result.NodeID] = result
+	}
+	return results, rows.Err()
+}
+
+func (s *Store) DeepTestQueueStats(ctx context.Context) (deeptest.QueueStats, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT status, COUNT(*) FROM deep_test_jobs GROUP BY status`)
+	if err != nil {
+		return deeptest.QueueStats{}, err
+	}
+	defer rows.Close()
+
+	var stats deeptest.QueueStats
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return deeptest.QueueStats{}, err
+		}
+		switch status {
+		case deeptest.StatusPending:
+			stats.Pending = count
+		case deeptest.StatusRunning:
+			stats.Running = count
+		case deeptest.StatusSuccess:
+			stats.Success = count
+		case deeptest.StatusFailed:
+			stats.Failed = count
+		}
+	}
+	return stats, rows.Err()
+}
+
+func (s *Store) ResetRunningDeepTestJobs(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE deep_test_jobs SET status = ?, updated_at = ? WHERE status = ?`, deeptest.StatusPending, encodeTime(time.Now()), deeptest.StatusRunning)
+	return err
+}
+
+func (s *Store) RecordChannelNodeUse(ctx context.Context, use ChannelNodeUse) error {
+	if use.ConnectedAt.IsZero() {
+		use.ConnectedAt = time.Now()
+	}
+	if use.SwitchedAt.IsZero() {
+		use.SwitchedAt = use.ConnectedAt
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO channel_node_history(channel_id, node_id, exit_ip, connected_at, switched_at)
+		VALUES(?, ?, ?, ?, ?)
+	`, use.ChannelID, use.NodeID, use.ExitIP, encodeTime(use.ConnectedAt), encodeTime(use.SwitchedAt))
+	return err
+}
+
+func (s *Store) RecentNodeIDsForChannel(ctx context.Context, channelID string, since time.Time) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT node_id, MAX(switched_at)
+		FROM channel_node_history
+		WHERE channel_id = ? AND switched_at >= ?
+		GROUP BY node_id
+	`, channelID, encodeTime(since))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	recent := map[string]time.Time{}
+	for rows.Next() {
+		var nodeID, switchedAt string
+		if err := rows.Scan(&nodeID, &switchedAt); err != nil {
+			return nil, err
+		}
+		recent[nodeID] = decodeTime(switchedAt)
+	}
+	return recent, rows.Err()
+}
+
+func (s *Store) CurrentChannelNodeUse(ctx context.Context, channelID string) (ChannelNodeUse, bool, error) {
+	var use ChannelNodeUse
+	var connectedAt, switchedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT channel_id, node_id, exit_ip, connected_at, switched_at
+		FROM channel_node_history
+		WHERE channel_id = ?
+		ORDER BY switched_at DESC, id DESC
+		LIMIT 1
+	`, channelID).Scan(&use.ChannelID, &use.NodeID, &use.ExitIP, &connectedAt, &switchedAt)
+	if err == sql.ErrNoRows {
+		return ChannelNodeUse{}, false, nil
+	}
+	if err != nil {
+		return ChannelNodeUse{}, false, err
+	}
+	use.ConnectedAt = decodeTime(connectedAt)
+	use.SwitchedAt = decodeTime(switchedAt)
+	return use, true, nil
 }
 
 func encodeTime(t time.Time) string {

@@ -16,6 +16,7 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/ipinfo"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/nodecheck"
@@ -136,11 +137,24 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 
 	tracker := connection.NewTracker()
 	checker := nodecheck.Checker{Timeout: 3 * time.Second}
+	refreshNodes := func(ctx context.Context) error {
+		loaded, err := loadNodes(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		nodes.Replace(loaded)
+		if err := database.ReplaceNodes(ctx, loaded); err != nil {
+			log.Printf("cache refreshed nodes failed: %v", err)
+		}
+		return nil
+	}
 	manager := channel.NewManager(channel.Config{
 		Channels:      channels,
 		Nodes:         nodes,
 		TunnelFactory: tunnelFactory(cfg),
 		NodeChecker:   checker.Check,
+		RefreshNodes:  refreshNodes,
+		History:       channelHistoryAdapter{store: database},
 		DataDir:       cfg.DataDir,
 		OpenVPNCmd:    cfg.OpenVPNCommand,
 	})
@@ -148,6 +162,19 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		return services{}, err
 	}
 	startNodeUpdater(ctx, cfg, nodes, database)
+	if err := database.ResetRunningDeepTestJobs(ctx); err != nil {
+		log.Printf("reset running deep test jobs failed: %v", err)
+	}
+	deepWorker := deeptest.NewWorker(deeptest.Config{
+		Queue:       database,
+		Nodes:       nodes,
+		Tester:      deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand},
+		BatchSize:   1,
+		Concurrency: 1,
+		Interval:    3 * time.Second,
+		Timeout:     25 * time.Second,
+	})
+	go deepWorker.Run(ctx)
 
 	proxies := make([]*proxy.Server, 0, len(channels))
 	for _, ch := range channels {
@@ -163,14 +190,10 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 			admin.WithConfig(cfgPath, cfg),
 			admin.WithStorage(database),
 			admin.WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
-				nodes, err := loadNodes(ctx, cfg)
-				if err != nil {
+				if err := refreshNodes(ctx); err != nil {
 					return nil, err
 				}
-				if err := database.ReplaceNodes(ctx, nodes); err != nil {
-					log.Printf("cache refreshed nodes failed: %v", err)
-				}
-				return nodes, nil
+				return nodes.List(), nil
 			}),
 			admin.WithNodeChecker(nodecheck.Checker{Timeout: 3 * time.Second}.Check),
 			admin.WithRestarter(func(ctx context.Context) error {
@@ -250,6 +273,28 @@ func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store,
 			}
 		}
 	}()
+}
+
+type channelHistoryAdapter struct {
+	store *storage.Store
+}
+
+func (a channelHistoryAdapter) RecentNodeIDsForChannel(ctx context.Context, channelID string, since time.Time) (map[string]time.Time, error) {
+	return a.store.RecentNodeIDsForChannel(ctx, channelID, since)
+}
+
+func (a channelHistoryAdapter) DeepTestResults(ctx context.Context) (map[string]deeptest.Result, error) {
+	return a.store.DeepTestResults(ctx)
+}
+
+func (a channelHistoryAdapter) RecordChannelNodeUse(ctx context.Context, use channel.NodeUse) error {
+	return a.store.RecordChannelNodeUse(ctx, storage.ChannelNodeUse{
+		ChannelID:   use.ChannelID,
+		NodeID:      use.NodeID,
+		ExitIP:      use.ExitIP,
+		ConnectedAt: use.ConnectedAt,
+		SwitchedAt:  use.SwitchedAt,
+	})
 }
 
 func tunnelFactory(cfg config.Config) channel.TunnelFactory {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
@@ -21,12 +22,29 @@ const (
 
 type TunnelFactory func(name string) tunnel.Tunnel
 type NodeChecker func(context.Context, node.Node) node.Node
+type NodeRefresher func(context.Context) error
+
+type NodeUse struct {
+	ChannelID   string
+	NodeID      string
+	ExitIP      string
+	ConnectedAt time.Time
+	SwitchedAt  time.Time
+}
+
+type History interface {
+	RecentNodeIDsForChannel(ctx context.Context, channelID string, since time.Time) (map[string]time.Time, error)
+	DeepTestResults(ctx context.Context) (map[string]deeptest.Result, error)
+	RecordChannelNodeUse(ctx context.Context, use NodeUse) error
+}
 
 type Config struct {
 	Channels      []config.Channel
 	Nodes         *node.Store
 	TunnelFactory TunnelFactory
 	NodeChecker   NodeChecker
+	RefreshNodes  NodeRefresher
+	History       History
 	DataDir       string
 	OpenVPNCmd    string
 }
@@ -142,9 +160,11 @@ func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) er
 		return err
 	}
 	ch.currentNode = n
+	ch.startedAt = time.Now()
 	ch.cfg.SelectionMode = SelectionManual
 	ch.cfg.ManualNodeID = n.ID
 	ch.err = ""
+	m.recordUse(ctx, ch.cfg.ID, n, ch.startedAt, ch.startedAt)
 	return nil
 }
 
@@ -261,6 +281,7 @@ func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel)
 		currentNode: n,
 		startedAt:   time.Now(),
 	}
+	m.recordUse(ctx, ch.ID, n, m.channels[ch.ID].startedAt, m.channels[ch.ID].startedAt)
 	return nil
 }
 
@@ -302,6 +323,11 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 	if ch.tunnel == nil {
 		return fmt.Errorf("channel %q is not running", channelID)
 	}
+	if m.cfg.RefreshNodes != nil {
+		if err := m.cfg.RefreshNodes(ctx); err != nil {
+			ch.err = fmt.Sprintf("refresh nodes before rotation failed: %v", err)
+		}
+	}
 	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID)
 	if err != nil {
 		ch.err = err.Error()
@@ -317,6 +343,7 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 	ch.currentNode = n
 	ch.startedAt = time.Now()
 	ch.err = ""
+	m.recordUse(ctx, ch.cfg.ID, n, ch.startedAt, ch.startedAt)
 	return nil
 }
 
@@ -345,11 +372,56 @@ func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, cur
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
-	n, ok := m.bestCheckedNode(ctx, ch.Region, currentNodeID)
+	n, ok := m.bestRotationNode(ctx, ch, currentNodeID)
 	if !ok {
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
+}
+
+func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, bool) {
+	if m.cfg.Nodes == nil {
+		return node.Node{}, false
+	}
+	deepResults := map[string]deeptest.Result{}
+	recent := map[string]time.Time{}
+	if m.cfg.History != nil {
+		if results, err := m.cfg.History.DeepTestResults(ctx); err == nil {
+			deepResults = results
+		}
+		if used, err := m.cfg.History.RecentNodeIDsForChannel(ctx, ch.ID, time.Now().Add(-24*time.Hour)); err == nil {
+			recent = used
+		}
+	}
+	all := m.cfg.Nodes.CandidatesByRegion(ch.Region, "", 0)
+	filtered := make([]node.Node, 0, len(all))
+	fallback := make([]node.Node, 0, len(all))
+	for _, candidate := range all {
+		if candidate.ID == currentNodeID {
+			continue
+		}
+		if ch.ManualNodeID != "" && candidate.ID == ch.ManualNodeID {
+			continue
+		}
+		if _, ok := recent[candidate.ID]; ok {
+			fallback = append(fallback, candidate)
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	if len(filtered) == 0 {
+		filtered = fallback
+	}
+	if len(filtered) == 0 {
+		return m.bestCheckedNode(ctx, ch.Region, currentNodeID)
+	}
+	best := filtered[0]
+	for _, candidate := range filtered[1:] {
+		if betterRotationNode(candidate, best, deepResults, recent) {
+			best = candidate
+		}
+	}
+	return best, true
 }
 
 func (m *Manager) bestCheckedNode(ctx context.Context, region, avoidID string) (node.Node, bool) {
@@ -393,6 +465,38 @@ func betterCheckedNode(a, b node.Node) bool {
 	return a.Speed > b.Speed
 }
 
+func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result, recent map[string]time.Time) bool {
+	aResult, aHas := deepResults[a.ID]
+	bResult, bHas := deepResults[b.ID]
+	aSuccess := aHas && aResult.Status == deeptest.StatusSuccess
+	bSuccess := bHas && bResult.Status == deeptest.StatusSuccess
+	if aSuccess != bSuccess {
+		return aSuccess
+	}
+	if aSuccess && bSuccess && aResult.ConnectMS != bResult.ConnectMS {
+		return aResult.ConnectMS < bResult.ConnectMS
+	}
+	if aUsed, okA := recent[a.ID]; okA {
+		if bUsed, okB := recent[b.ID]; okB && !aUsed.Equal(bUsed) {
+			return aUsed.Before(bUsed)
+		}
+	}
+	return betterCheckedNode(a, b)
+}
+
+func (m *Manager) recordUse(ctx context.Context, channelID string, n node.Node, connectedAt time.Time, switchedAt time.Time) {
+	if m.cfg.History == nil || channelID == "" || n.ID == "" {
+		return
+	}
+	_ = m.cfg.History.RecordChannelNodeUse(ctx, NodeUse{
+		ChannelID:   channelID,
+		NodeID:      n.ID,
+		ExitIP:      firstNonEmpty(n.IP, n.Hostname),
+		ConnectedAt: connectedAt,
+		SwitchedAt:  switchedAt,
+	})
+}
+
 func (m *Manager) findNode(id string) (node.Node, bool) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, false
@@ -427,4 +531,13 @@ func snapshotOf(ch *runtimeChannel) Snapshot {
 		ProxyURLHTTP:   fmt.Sprintf("http://%s:%d", ch.cfg.ListenHost, ch.cfg.ListenPort),
 		ProxyURLSOCKS5: fmt.Sprintf("socks5://%s:%d", ch.cfg.ListenHost, ch.cfg.ListenPort),
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

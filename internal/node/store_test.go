@@ -58,6 +58,22 @@ func TestCandidatesByRegionReturnsSortedCopy(t *testing.T) {
 	}
 }
 
+func TestNodeByIDReturnsCopy(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{{ID: "jp-1", Region: "jp", Available: true}})
+
+	got, ok := store.NodeByID("jp-1")
+	if !ok {
+		t.Fatalf("NodeByID ok = false, want true")
+	}
+	got.Region = "us"
+
+	again, ok := store.NodeByID("jp-1")
+	if !ok || again.Region != "jp" {
+		t.Fatalf("NodeByID returned mutable data: %+v ok=%v", again, ok)
+	}
+}
+
 func TestBestByRegionAvoidsPreviousNodeWhenAlternativeExists(t *testing.T) {
 	store := NewStore()
 	store.Replace([]Node{

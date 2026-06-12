@@ -27,7 +27,7 @@ const indexHTML = `<!doctype html>
     .brand h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: 0; }
     .brand span { color: #aebbd0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .page { max-width: 1560px; margin: 0 auto; padding: 28px 24px 40px; }
-    .stats { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .stats { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
     .stat { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; padding: 16px; box-shadow: 0 10px 24px rgba(23, 32, 51, .06); }
     .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
     .stat-value { font-size: 24px; font-weight: 760; color: #111827; }
@@ -88,6 +88,7 @@ const indexHTML = `<!doctype html>
         <div class="stat"><div class="stat-label">通道</div><div class="stat-value">{{ channels.length }}</div></div>
         <div class="stat"><div class="stat-label">节点</div><div class="stat-value">{{ filteredNodes.length }} / {{ nodes.length }}</div></div>
         <div class="stat"><div class="stat-label">在线连接</div><div class="stat-value">{{ connections.length }}</div></div>
+        <div class="stat"><div class="stat-label">深测队列</div><div class="stat-value" style="font-size:16px">{{ deepTestSummary }}</div></div>
         <div class="stat"><div class="stat-label">节点更新间隔</div><div class="stat-value">{{ settings.node_refresh_interval || '-' }}</div></div>
         <div class="stat"><div class="stat-label">代理主机</div><div class="stat-value" style="font-size:16px">{{ proxyHost }}</div></div>
       </section>
@@ -102,6 +103,7 @@ const indexHTML = `<!doctype html>
               </div>
               <a-space>
                 <a-button :loading="probingBatch" @click="probeVisibleNodes">测试当前列表延迟</a-button>
+                <a-button type="primary" :loading="deepTesting" @click="enqueueDeepTestVisibleNodes">深度测试当前列表</a-button>
               </a-space>
             </div>
             <div class="card-body">
@@ -239,9 +241,11 @@ const indexHTML = `<!doctype html>
           updatingNodes: false,
           restarting: false,
           probingBatch: false,
+          deepTesting: false,
           channels: [],
           nodes: [],
           connections: [],
+          deepStats: { pending: 0, running: 0, success: 0, failed: 0 },
           settings: { node_refresh_interval: '20m' },
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
@@ -255,6 +259,7 @@ const indexHTML = `<!doctype html>
             { title: '主机 / IP', key: 'host', width: 220, customRender: ({ record }) => h('div', { class: 'host-cell' }, [h('span', { class: 'mono' }, record.hostname || '-'), h('span', { class: 'mono' }, record.ip || '-')]) },
             { title: '协议', key: 'proto', width: 92, customRender: ({ record }) => (record.proto || 'udp') + ':' + (record.port || 1194) },
             { title: '实时延迟', key: 'latency', width: 106, sorter: (a, b) => Number(a.latency_ms || 999999) - Number(b.latency_ms || 999999), customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '未测' },
+            { title: '深度测试', key: 'deep', width: 170, customRender: ({ record }) => this.deepTestCell(record) },
             { title: '类型', key: 'type', width: 118, customRender: ({ record }) => h(antd.Tag, { color: this.ipTypeColor(record.ip_type) }, () => this.ipTypeText(record.ip_type) || '未知') },
             { title: '纯净度', key: 'purity', width: 122, sorter: (a, b) => Number(b.purity_score || 0) - Number(a.purity_score || 0), customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => (record.purity_score ? record.purity_score + '/100 ' : '未知 ') + this.qualityText(record.quality)) },
             { title: 'ASN / 运营商', key: 'owner', width: 190, customRender: ({ record }) => h('div', [h('div', record.owner || '-'), h('div', { class: 'muted' }, record.asn || record.as_name || '')]) },
@@ -297,6 +302,10 @@ const indexHTML = `<!doctype html>
         visibleNodes() {
           return this.filteredNodes.slice(0, Number(this.filters.limit || 120));
         },
+        deepTestSummary() {
+          const s = this.deepStats || {};
+          return '待 ' + Number(s.pending || 0) + ' / 跑 ' + Number(s.running || 0) + ' / 成 ' + Number(s.success || 0) + ' / 败 ' + Number(s.failed || 0);
+        },
         switchDialogNodes() {
           if (!this.channelSwitchDialog.channel) return [];
           const nodes = this.nodes.filter(n => n.region === this.channelSwitchDialog.channel.region);
@@ -329,15 +338,17 @@ const indexHTML = `<!doctype html>
         async load(showLoading = true) {
           if (showLoading) this.loading = true;
           try {
-            const [status, channels, connections, nodes] = await Promise.all([
+            const [status, channels, connections, nodes, deepStatus] = await Promise.all([
               this.request('status'),
               this.request('channels'),
               this.request('connections'),
-              this.request('nodes')
+              this.request('nodes'),
+              this.request('deep-tests/status').catch(() => ({ stats: this.deepStats }))
             ]);
             this.channels = channels.channels || [];
             this.connections = connections.connections || [];
             this.nodes = nodes.nodes || [];
+            this.deepStats = deepStatus.stats || this.deepStats;
             if (status.settings) this.settings = Object.assign({}, this.settings, status.settings);
           } catch (err) {
             message.error(err.message);
@@ -407,6 +418,22 @@ const indexHTML = `<!doctype html>
             message.error(err.message);
           } finally {
             this.probingBatch = false;
+          }
+        },
+        async enqueueDeepTestVisibleNodes() {
+          const nodeIDs = this.visibleNodes.map(n => n.id).filter(Boolean).slice(0, 500);
+          if (!nodeIDs.length) return message.warning('当前列表没有可深度测试的节点');
+          this.deepTesting = true;
+          try {
+            const body = await this.request('deep-tests', { method: 'POST', body: JSON.stringify({ node_ids: nodeIDs }) });
+            this.deepStats = body.stats || this.deepStats;
+            const summary = body.summary || {};
+            message.success('已加入深测队列：新增 ' + Number(summary.created || 0) + '，跳过 ' + Number(summary.skipped || 0));
+            await this.load(false);
+          } catch (err) {
+            message.error(err.message);
+          } finally {
+            this.deepTesting = false;
           }
         },
         openChannelDialog(row) {
@@ -507,6 +534,25 @@ const indexHTML = `<!doctype html>
             h('code', { class: 'mono', title: value }, value),
             h(antd.Button, { size: 'small', onClick: () => this.copyText(value) }, () => '复制')
           ]);
+        },
+        deepTestCell(record) {
+          const result = record.deep_test;
+          if (!result) return h('span', { class: 'muted' }, '未深测');
+          if (result.status === 'success') {
+            return h('div', [
+              h(antd.Tag, { color: 'green' }, () => '成功'),
+              h('div', { class: 'mono' }, result.exit_ip || '-'),
+              h('div', { class: 'muted' }, (result.connect_ms ? result.connect_ms + ' ms' : '') + (result.exit_country ? ' / ' + result.exit_country : ''))
+            ]);
+          }
+          return h('div', [
+            h(antd.Tag, { color: 'red' }, () => '失败'),
+            h('div', { class: 'muted', title: result.fail_reason || '' }, this.shortText(result.fail_reason || '失败', 42))
+          ]);
+        },
+        shortText(value, max) {
+          value = String(value || '');
+          return value.length > max ? value.slice(0, max) + '...' : value;
         },
         nodeLabel(n) {
           return [n.id, this.regionText(n.region, n.country), n.latency_ms ? n.latency_ms + 'ms' : '', this.ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');

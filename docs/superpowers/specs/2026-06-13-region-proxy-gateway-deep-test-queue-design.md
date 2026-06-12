@@ -18,6 +18,7 @@ This feature includes:
 - Persistent deep test results for nodes.
 - Channel connection and node-use history persisted in SQLite.
 - Rotation logic that refreshes node data before selecting a replacement and avoids recently used nodes in the same channel.
+- Lightweight admin APIs so page refresh does not return large OpenVPN configs or wait for deep tests.
 
 This feature does not include:
 
@@ -25,6 +26,7 @@ This feature does not include:
 - Running high-concurrency OpenVPN probes.
 - Replacing the existing lightweight TCP/ping check.
 - A paid IP-risk or purity API integration.
+- Returning raw OpenVPN config text from normal admin list APIs.
 
 ## Deep Test Queue
 
@@ -126,6 +128,18 @@ Channel list additions:
 
 The UI should not block while deep testing. It should poll job status every few seconds while jobs are running.
 
+## Admin API Performance
+
+Normal page refresh must stay lightweight:
+
+- `/api/nodes` returns a compact node view without the `openvpn` field.
+- `/api/nodes/refresh` updates the in-memory and SQLite node cache but also returns compact node views.
+- Deep-test enqueue APIs return immediately after creating jobs.
+- Queue progress APIs return counts and recent cached results only.
+- No page-load endpoint starts OpenVPN, runs deep tests, refreshes VPNGate data, or performs long network probes.
+
+Go's HTTP server already handles requests concurrently. The main performance fix is avoiding large payloads and moving long work to background goroutines instead of trying to add extra processes around page APIs.
+
 ## Failure Handling
 
 OpenVPN deep test failures should not crash the service.
@@ -148,6 +162,7 @@ Tests should cover:
 - Enqueue deep test jobs deduplicates pending jobs.
 - Worker marks jobs success or failed.
 - Node list includes deep test result fields.
+- Node list and node refresh APIs do not include raw `openvpn` config text.
 - Rotation avoids current node and nodes used within 24 hours.
 - Rotation falls back to least recently used node when all nodes are inside the 24-hour window.
 - Channel history records connected and switched timestamps.

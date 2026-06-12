@@ -6,8 +6,10 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
@@ -262,6 +264,135 @@ func TestManagerRetriesDialFailuresThenRotatesAutoChannel(t *testing.T) {
 	}
 }
 
+func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 200, Available: true},
+		{ID: "jp-c", Region: "jp", Speed: 100, Available: true},
+	})
+	history := newFakeHistory()
+	history.recent["jp-3000"] = map[string]time.Time{"jp-b": time.Now().Add(-time.Hour)}
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		History:       history,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-c" {
+		t.Fatalf("current node = %q, want jp-c because jp-a is current and jp-b was used recently", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerPrefersDeepTestSuccessDuringRotation(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 100, Available: true},
+		{ID: "jp-c", Region: "jp", Speed: 200, Available: true},
+	})
+	history := newFakeHistory()
+	history.results["jp-b"] = deeptest.Result{NodeID: "jp-b", Status: deeptest.StatusSuccess, ConnectMS: 120}
+	history.results["jp-c"] = deeptest.Result{NodeID: "jp-c", Status: deeptest.StatusFailed, ConnectMS: 20}
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		History:       history,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-b" {
+		t.Fatalf("current node = %q, want deep-test-success jp-b", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerRefreshesNodesBeforeRotation(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 200, Available: true},
+	})
+	refreshed := false
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		RefreshNodes: func(ctx context.Context) error {
+			refreshed = true
+			nodes.Replace([]node.Node{
+				{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+				{ID: "jp-fresh", Region: "jp", Speed: 900, Available: true},
+			})
+			return nil
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if !refreshed {
+		t.Fatalf("RefreshNodes was not called")
+	}
+	if snapshot.CurrentNodeID != "jp-fresh" {
+		t.Fatalf("current node = %q, want refreshed jp-fresh", snapshot.CurrentNodeID)
+	}
+}
+
 func TestManagerDialReturnsErrorWhenRetriesAndRotationFail(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -353,4 +484,37 @@ func (t *recordingTunnel) DialContext(ctx context.Context, network, address stri
 
 func (t *recordingTunnel) Status() tunnel.Status {
 	return tunnel.Status{Name: t.name, NodeID: t.startedNode.ID, Ready: true}
+}
+
+type fakeHistory struct {
+	recent  map[string]map[string]time.Time
+	results map[string]deeptest.Result
+	uses    []NodeUse
+}
+
+func newFakeHistory() *fakeHistory {
+	return &fakeHistory{recent: map[string]map[string]time.Time{}, results: map[string]deeptest.Result{}}
+}
+
+func (h *fakeHistory) RecentNodeIDsForChannel(ctx context.Context, channelID string, since time.Time) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	for nodeID, usedAt := range h.recent[channelID] {
+		if usedAt.After(since) || usedAt.Equal(since) {
+			out[nodeID] = usedAt
+		}
+	}
+	return out, nil
+}
+
+func (h *fakeHistory) DeepTestResults(ctx context.Context) (map[string]deeptest.Result, error) {
+	out := map[string]deeptest.Result{}
+	for nodeID, result := range h.results {
+		out[nodeID] = result
+	}
+	return out, nil
+}
+
+func (h *fakeHistory) RecordChannelNodeUse(ctx context.Context, use NodeUse) error {
+	h.uses = append(h.uses, use)
+	return nil
 }

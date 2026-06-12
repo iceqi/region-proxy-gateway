@@ -4,8 +4,10 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 )
 
@@ -91,6 +93,112 @@ func TestSQLiteStoreReplacesAndListsNodes(t *testing.T) {
 	}
 	if got[0].ProbeStatus != "" || got[0].ProbeMessage != "" {
 		t.Fatalf("probe fields should stay realtime and not be cached: %+v", got[0])
+	}
+}
+
+func TestSQLiteStoreDeepTestQueueDeduplicatesPendingJobs(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	first, err := store.EnqueueDeepTestJobs(ctx, []string{"jp-1", "jp-1", "jp-2"})
+	if err != nil {
+		t.Fatalf("EnqueueDeepTestJobs first: %v", err)
+	}
+	second, err := store.EnqueueDeepTestJobs(ctx, []string{"jp-1", "jp-3"})
+	if err != nil {
+		t.Fatalf("EnqueueDeepTestJobs second: %v", err)
+	}
+
+	if first.Created != 2 || first.Skipped != 1 {
+		t.Fatalf("first summary = %+v, want 2 created 1 skipped", first)
+	}
+	if second.Created != 1 || second.Skipped != 1 {
+		t.Fatalf("second summary = %+v, want 1 created 1 skipped", second)
+	}
+
+	jobs, err := store.ClaimDeepTestJobs(ctx, 10, time.Now())
+	if err != nil {
+		t.Fatalf("ClaimDeepTestJobs: %v", err)
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("jobs = %d, want 3", len(jobs))
+	}
+}
+
+func TestSQLiteStoreSavesDeepTestResult(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+
+	if _, err := store.EnqueueDeepTestJobs(ctx, []string{"jp-1"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	jobs, err := store.ClaimDeepTestJobs(ctx, 1, time.Now())
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs = %d, want 1", len(jobs))
+	}
+
+	result := deeptest.Result{
+		NodeID:      "jp-1",
+		Status:      deeptest.StatusSuccess,
+		ExitIP:      "203.0.113.99",
+		ExitCountry: "Japan",
+		ConnectMS:   1234,
+		TestedAt:    time.Date(2026, 6, 13, 1, 2, 3, 0, time.UTC),
+	}
+	if err := store.CompleteDeepTestJob(ctx, jobs[0].ID, result); err != nil {
+		t.Fatalf("CompleteDeepTestJob: %v", err)
+	}
+
+	got, ok, err := store.DeepTestResult(ctx, "jp-1")
+	if err != nil {
+		t.Fatalf("DeepTestResult: %v", err)
+	}
+	if !ok || got.Status != deeptest.StatusSuccess || got.ExitIP != "203.0.113.99" || got.ConnectMS != 1234 {
+		t.Fatalf("result = %+v ok=%v, want saved success", got, ok)
+	}
+}
+
+func TestSQLiteStoreRecordsChannelHistoryAndRecentUse(t *testing.T) {
+	store := openTestStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+
+	if err := store.RecordChannelNodeUse(ctx, ChannelNodeUse{
+		ChannelID:   "jp-3000",
+		NodeID:      "jp-1",
+		ExitIP:      "203.0.113.10",
+		ConnectedAt: now.Add(-2 * time.Hour),
+		SwitchedAt:  now.Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("RecordChannelNodeUse recent: %v", err)
+	}
+	if err := store.RecordChannelNodeUse(ctx, ChannelNodeUse{
+		ChannelID:   "jp-3000",
+		NodeID:      "jp-old",
+		ExitIP:      "203.0.113.11",
+		ConnectedAt: now.Add(-30 * time.Hour),
+		SwitchedAt:  now.Add(-30 * time.Hour),
+	}); err != nil {
+		t.Fatalf("RecordChannelNodeUse old: %v", err)
+	}
+
+	recent, err := store.RecentNodeIDsForChannel(ctx, "jp-3000", now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("RecentNodeIDsForChannel: %v", err)
+	}
+	if len(recent) != 1 || recent["jp-1"].IsZero() {
+		t.Fatalf("recent = %+v, want only jp-1", recent)
+	}
+
+	current, ok, err := store.CurrentChannelNodeUse(ctx, "jp-3000")
+	if err != nil {
+		t.Fatalf("CurrentChannelNodeUse: %v", err)
+	}
+	if !ok || current.NodeID != "jp-1" || current.ExitIP != "203.0.113.10" {
+		t.Fatalf("current = %+v ok=%v, want jp-1", current, ok)
 	}
 }
 

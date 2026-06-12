@@ -25,6 +25,18 @@ func (s *Store) List() []Node {
 	return append([]Node(nil), s.nodes...)
 }
 
+func (s *Store) NodeByID(id string) (Node, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, n := range s.nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return Node{}, false
+}
+
 func (s *Store) Update(id string, update func(Node) Node) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

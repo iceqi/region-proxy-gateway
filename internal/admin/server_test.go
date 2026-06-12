@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
+	"github.com/iceqi/region-proxy-gateway/internal/deeptest"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/storage"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
@@ -107,10 +109,47 @@ func TestNodesCanFilterByRegion(t *testing.T) {
 	}
 }
 
+func TestNodesAPIUsesCompactViewWithoutOpenVPNConfig(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	nodes.Replace([]node.Node{{
+		ID:        "jp-heavy",
+		Region:    "jp",
+		Country:   "Japan",
+		IP:        "203.0.113.88",
+		Hostname:  "vpn-heavy",
+		Port:      1194,
+		Proto:     "udp",
+		OpenVPN:   strings.Repeat("client\nremote example.com 1194\n", 200),
+		Available: true,
+	}})
+	server := NewServer(manager, nodes, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "openvpn") || strings.Contains(rec.Body.String(), "remote example.com") {
+		t.Fatalf("nodes response should not include raw openvpn config: %s", rec.Body.String())
+	}
+	var body struct {
+		Nodes []nodeView `json:"nodes"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Nodes) != 1 || body.Nodes[0].ID != "jp-heavy" || body.Nodes[0].IP != "203.0.113.88" {
+		t.Fatalf("nodes = %+v, want compact node metadata", body.Nodes)
+	}
+}
+
 func TestRefreshNodesReplacesNodeStore(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil, WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
-		return []node.Node{{ID: "us-new", Region: "us", Available: true}}, nil
+		return []node.Node{{ID: "us-new", Region: "us", OpenVPN: "client\nremote hidden.example 1194\n", Available: true}}, nil
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/nodes/refresh", nil)
@@ -124,6 +163,9 @@ func TestRefreshNodesReplacesNodeStore(t *testing.T) {
 	got := nodes.List()
 	if len(got) != 1 || got[0].ID != "us-new" {
 		t.Fatalf("nodes = %+v, want us-new", got)
+	}
+	if strings.Contains(rec.Body.String(), "openvpn") || strings.Contains(rec.Body.String(), "hidden.example") {
+		t.Fatalf("refresh response should not include raw openvpn config: %s", rec.Body.String())
 	}
 }
 
@@ -196,6 +238,90 @@ func TestProbeNodesUpdatesSelectedNodes(t *testing.T) {
 	}
 	if latencyByID["us-1"] != 0 {
 		t.Fatalf("us-1 latency = %d, want untouched", latencyByID["us-1"])
+	}
+}
+
+func TestDeepTestEnqueueAndStatusEndpoints(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	store := openAdminTestStore(t)
+	server := NewServer(manager, nodes, nil, WithStorage(store))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/deep-tests", bytes.NewBufferString(`{"node_ids":["jp-1","jp-1"]}`))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var enqueueBody struct {
+		Summary deeptest.EnqueueSummary `json:"summary"`
+		Stats   deeptest.QueueStats     `json:"stats"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&enqueueBody); err != nil {
+		t.Fatalf("decode enqueue response: %v", err)
+	}
+	if enqueueBody.Summary.Created != 1 || enqueueBody.Summary.Skipped != 1 || enqueueBody.Stats.Pending != 1 {
+		t.Fatalf("enqueue body = %+v, want 1 created 1 skipped 1 pending", enqueueBody)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/admin/api/deep-tests/status", nil)
+	statusRec := httptest.NewRecorder()
+
+	server.ServeHTTP(statusRec, statusReq)
+
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var statusBody struct {
+		Stats deeptest.QueueStats `json:"stats"`
+	}
+	if err := json.NewDecoder(statusRec.Body).Decode(&statusBody); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if statusBody.Stats.Pending != 1 {
+		t.Fatalf("status body = %+v, want pending 1", statusBody)
+	}
+}
+
+func TestNodesAPIIncludesDeepTestResult(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	store := openAdminTestStore(t)
+	if _, err := store.EnqueueDeepTestJobs(context.Background(), []string{"jp-1"}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	jobs, err := store.ClaimDeepTestJobs(context.Background(), 1, time.Now())
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := store.CompleteDeepTestJob(context.Background(), jobs[0].ID, deeptest.Result{
+		NodeID:      "jp-1",
+		Status:      deeptest.StatusSuccess,
+		ExitIP:      "203.0.113.99",
+		ExitCountry: "Japan",
+		ConnectMS:   456,
+		TestedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithStorage(store))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Nodes []nodeView `json:"nodes"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Nodes) != 1 || body.Nodes[0].DeepTest == nil || body.Nodes[0].DeepTest.ExitIP != "203.0.113.99" {
+		t.Fatalf("nodes = %+v, want deep test result", body.Nodes)
 	}
 }
 
@@ -286,7 +412,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "出口 IP", "channelExitAddress"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
