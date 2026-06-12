@@ -295,6 +295,33 @@ func TestOpenVPNTunnelSwitchRestartsWithNewNode(t *testing.T) {
 	}
 }
 
+func TestOpenVPNTunnelSwitchRollsBackWhenNewNodeFailsToStart(t *testing.T) {
+	starter := &failingSecondStartProcessStarter{}
+	dir := t.TempDir()
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: dir, Starter: starter})
+	first := node.Node{ID: "jp-1", OpenVPN: "client\nremote first 1194 udp\n"}
+	second := node.Node{ID: "jp-2", OpenVPN: "client\nremote second 1194 udp\n"}
+	if err := tun.Start(context.Background(), first, Options{Name: "jp-10", DeviceName: "rpg0"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	err := tun.Switch(context.Background(), second)
+	if err == nil {
+		t.Fatalf("Switch should fail")
+	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
+
+	status := tun.Status()
+	if status.NodeID != "jp-1" || !status.Ready {
+		t.Fatalf("status = %+v, want rollback to ready jp-1", status)
+	}
+	if starter.calls != 3 {
+		t.Fatalf("start calls = %d, want initial, failed new, rollback old", starter.calls)
+	}
+}
+
 type recordingProcessStarter struct {
 	commands  [][]string
 	processes []*recordingProcess
@@ -344,6 +371,18 @@ type singleProcessStarter struct {
 
 func (s *singleProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
 	return s.process, nil
+}
+
+type failingSecondStartProcessStarter struct {
+	calls int
+}
+
+func (s *failingSecondStartProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
+	s.calls++
+	if s.calls == 2 {
+		return nil, errors.New("new openvpn failed")
+	}
+	return &recordingProcess{}, nil
 }
 
 type recordingDeviceDialer struct {

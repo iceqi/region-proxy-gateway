@@ -21,6 +21,7 @@ type Server struct {
 	connections  *connection.Tracker
 	refreshNodes func(context.Context) ([]node.Node, error)
 	checkNode    func(context.Context, node.Node) node.Node
+	restarter    func(context.Context) error
 	configPath   string
 	config       config.Config
 	configMu     sync.Mutex
@@ -63,6 +64,12 @@ func WithNodeRefresher(refresh func(context.Context) ([]node.Node, error)) Optio
 func WithNodeChecker(check func(context.Context, node.Node) node.Node) Option {
 	return func(s *Server) {
 		s.checkNode = check
+	}
+}
+
+func WithRestarter(restart func(context.Context) error) Option {
+	return func(s *Server) {
+		s.restarter = restart
 	}
 }
 
@@ -126,6 +133,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/settings" {
 		s.handleSaveSettings(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/system/restart" {
+		s.handleRestart(w, r)
 		return
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/channels/") {
@@ -357,6 +368,18 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+}
+
+func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	if s.restarter == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "service restart is not configured"})
+		return
+	}
+	if err := s.restarter(r.Context()); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) updateConfig(update func(config.Config) (config.Config, error)) (config.Config, error) {

@@ -15,6 +15,8 @@ import (
 const (
 	SelectionAuto   = config.SelectionAuto
 	SelectionManual = config.SelectionManual
+
+	dialRetryCount = 3
 )
 
 type TunnelFactory func(name string) tunnel.Tunnel
@@ -28,9 +30,11 @@ type Config struct {
 }
 
 type Manager struct {
-	mu       sync.RWMutex
-	cfg      Config
-	channels map[string]*runtimeChannel
+	mu        sync.RWMutex
+	cfg       Config
+	channels  map[string]*runtimeChannel
+	cancel    context.CancelFunc
+	rotatorWG sync.WaitGroup
 }
 
 type runtimeChannel struct {
@@ -68,7 +72,8 @@ func NewManager(cfg Config) *Manager {
 
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	runCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
 
 	for index, ch := range m.cfg.Channels {
 		if !ch.Enabled {
@@ -76,13 +81,21 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 		if err := m.startLocked(ctx, index, ch); err != nil {
-			return err
+			m.channels[ch.ID] = &runtimeChannel{cfg: ch, err: err.Error()}
 		}
 	}
+	m.mu.Unlock()
+
+	m.startRotators(runCtx)
 	return nil
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.rotatorWG.Wait()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -96,6 +109,12 @@ func (m *Manager) Stop(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+func (m *Manager) RotateNow(ctx context.Context, channelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.rotateLocked(ctx, channelID)
 }
 
 func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) error {
@@ -156,15 +175,62 @@ func (m *Manager) ConfiguredChannels() []config.Channel {
 }
 
 func (m *Manager) DialContext(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	var lastErr error
+	for attempt := 0; attempt <= dialRetryCount; attempt++ {
+		tun, err := m.tunnelForDial(channelID)
+		if err != nil {
+			return nil, err
+		}
+		conn, err := tun.DialContext(ctx, network, address)
+		if err == nil {
+			m.clearError(channelID)
+			return conn, nil
+		}
+		lastErr = err
+	}
+
+	if err := m.RotateNow(ctx, channelID); err != nil {
+		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries: %v; rotate failed: %v", dialRetryCount, lastErr, err))
+		return nil, fmt.Errorf("dial failed after %d retries: %w; rotate failed: %v", dialRetryCount, lastErr, err)
+	}
+
+	tun, err := m.tunnelForDial(channelID)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := tun.DialContext(ctx, network, address)
+	if err != nil {
+		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries and node rotation: %v", dialRetryCount, err))
+		return nil, fmt.Errorf("dial failed after %d retries and node rotation: %w", dialRetryCount, err)
+	}
+	m.clearError(channelID)
+	return conn, nil
+}
+
+func (m *Manager) tunnelForDial(channelID string) (tunnel.Tunnel, error) {
 	m.mu.RLock()
+	defer m.mu.RUnlock()
 	ch, ok := m.channels[channelID]
 	if !ok || ch.tunnel == nil {
-		m.mu.RUnlock()
 		return nil, fmt.Errorf("channel %q is not running", channelID)
 	}
-	tun := ch.tunnel
-	m.mu.RUnlock()
-	return tun.DialContext(ctx, network, address)
+	return ch.tunnel, nil
+}
+
+func (m *Manager) setChannelError(channelID string, message string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[channelID]; ok {
+		ch.err = message
+	}
+}
+
+func (m *Manager) clearError(channelID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ch, ok := m.channels[channelID]; ok {
+		ch.err = ""
+	}
 }
 
 func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel) error {
@@ -196,6 +262,62 @@ func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel)
 	return nil
 }
 
+func (m *Manager) startRotators(ctx context.Context) {
+	for _, ch := range m.cfg.Channels {
+		if !ch.Enabled || ch.SelectionMode != SelectionAuto || ch.RotateMinutes <= 0 {
+			continue
+		}
+		channelID := ch.ID
+		interval := time.Duration(ch.RotateMinutes) * time.Minute
+		m.rotatorWG.Add(1)
+		go func() {
+			defer m.rotatorWG.Done()
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					_ = m.RotateNow(ctx, channelID)
+				}
+			}
+		}()
+	}
+}
+
+func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
+	ch, ok := m.channels[channelID]
+	if !ok {
+		return fmt.Errorf("channel %q not found", channelID)
+	}
+	if !ch.cfg.Enabled {
+		return fmt.Errorf("channel %q is disabled", channelID)
+	}
+	if ch.cfg.SelectionMode != SelectionAuto {
+		return fmt.Errorf("channel %q is manual mode", channelID)
+	}
+	if ch.tunnel == nil {
+		return fmt.Errorf("channel %q is not running", channelID)
+	}
+	n, err := m.selectRotationNode(ch.cfg, ch.currentNode.ID)
+	if err != nil {
+		ch.err = err.Error()
+		return err
+	}
+	if n.ID == ch.currentNode.ID {
+		return nil
+	}
+	if err := ch.tunnel.Switch(ctx, n); err != nil {
+		ch.err = err.Error()
+		return err
+	}
+	ch.currentNode = n
+	ch.startedAt = time.Now()
+	ch.err = ""
+	return nil
+}
+
 func (m *Manager) selectNode(ch config.Channel) (node.Node, error) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
@@ -211,6 +333,17 @@ func (m *Manager) selectNode(ch config.Channel) (node.Node, error) {
 		return n, nil
 	}
 	n, ok := m.cfg.Nodes.BestByRegion(ch.Region, "")
+	if !ok {
+		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
+	}
+	return n, nil
+}
+
+func (m *Manager) selectRotationNode(ch config.Channel, currentNodeID string) (node.Node, error) {
+	if m.cfg.Nodes == nil {
+		return node.Node{}, fmt.Errorf("node store is required")
+	}
+	n, ok := m.cfg.Nodes.BestByRegion(ch.Region, currentNodeID)
 	if !ok {
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}

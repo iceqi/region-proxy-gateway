@@ -173,6 +173,27 @@ func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
 	}
 }
 
+func TestRestartEndpointCallsRestarter(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	called := false
+	server := NewServer(manager, nodes, nil, WithRestarter(func(ctx context.Context) error {
+		called = true
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/system/restart", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !called {
+		t.Fatalf("restarter was not called")
+	}
+}
+
 func TestIndexReturnsHTML(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))
@@ -208,6 +229,9 @@ func TestIndexReturnsHTML(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing localized text/helper %q", text)
 		}
+	}
+	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
+		t.Fatalf("admin html should include service restart button")
 	}
 }
 

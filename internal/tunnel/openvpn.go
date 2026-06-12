@@ -232,6 +232,7 @@ func (o *OpenVPN) Stop(ctx context.Context) error {
 func (o *OpenVPN) Switch(ctx context.Context, n node.Node) error {
 	o.mu.Lock()
 	opts := o.options
+	previousNode := o.startedNode
 	o.mu.Unlock()
 
 	if err := o.Stop(ctx); err != nil {
@@ -239,6 +240,12 @@ func (o *OpenVPN) Switch(ctx context.Context, n node.Node) error {
 		return err
 	}
 	if err := o.Start(ctx, n, opts); err != nil {
+		startErr := err
+		if previousNode.OpenVPN != "" {
+			if rollbackErr := o.Start(ctx, previousNode, opts); rollbackErr != nil {
+				err = fmt.Errorf("%w; rollback to %q failed: %v", startErr, previousNode.ID, rollbackErr)
+			}
+		}
 		o.setError(err)
 		return err
 	}

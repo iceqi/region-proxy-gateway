@@ -69,6 +69,7 @@ const indexHTML = `<!doctype html>
       <a-space>
         <a-button :loading="loading" @click="load">刷新</a-button>
         <a-button type="primary" :loading="updatingNodes" @click="updateNodes">更新节点</a-button>
+        <a-button danger :loading="restarting" @click="restartService">重启服务</a-button>
       </a-space>
     </header>
 
@@ -223,6 +224,7 @@ const indexHTML = `<!doctype html>
           activeTab: 'nodes',
           loading: false,
           updatingNodes: false,
+          restarting: false,
           channels: [],
           nodes: [],
           connections: [],
@@ -250,7 +252,7 @@ const indexHTML = `<!doctype html>
             { title: '端口', dataIndex: 'listen_port', width: 86 },
             { title: '地区', dataIndex: 'region', width: 110, customRender: ({ record }) => this.regionText(record.region) + '（' + record.region + '）' },
             { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
-            { title: '当前节点', key: 'node', width: 190, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: 'muted' }, record.last_error || '')]) },
+            { title: '当前节点', key: 'node', width: 220, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '连接方式', key: 'connect', width: 430, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
             { title: '操作', key: 'actions', width: 230, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
@@ -345,6 +347,26 @@ const indexHTML = `<!doctype html>
           } finally {
             this.updatingNodes = false;
           }
+        },
+        async restartService() {
+          Modal.confirm({
+            title: '确认重启服务？',
+            content: '会断开当前代理连接，systemd 通常会在几秒内自动拉起服务。',
+            okText: '重启',
+            okType: 'danger',
+            cancelText: '取消',
+            onOk: async () => {
+              this.restarting = true;
+              try {
+                await this.request('system/restart', { method: 'POST' });
+                message.success('已发送重启命令，请等待几秒后刷新页面');
+              } catch (err) {
+                message.error(err.message);
+              } finally {
+                this.restarting = false;
+              }
+            }
+          });
         },
         async probeNode(nodeID) {
           this.probing[nodeID] = true;
@@ -493,6 +515,12 @@ const indexHTML = `<!doctype html>
         },
         selectionModeText(mode) {
           return ({ auto: '自动优选', manual: '手动节点' })[mode] || mode || '';
+        },
+        channelErrorText(text) {
+          return String(text || '')
+            .replace('dial failed after 3 retries', '访问失败并重试 3 次后仍失败')
+            .replace('and node rotation', '，切换节点后')
+            .replace('rotate failed', '切换节点失败');
         },
         qualityText(type) {
           return ({ normal: '普通', datacenter: '数据中心', mobile: '移动端', proxy: '代理风险' })[type] || type || '';

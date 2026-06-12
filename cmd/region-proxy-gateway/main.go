@@ -7,7 +7,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/admin"
@@ -46,7 +48,8 @@ func main() {
 		log.Fatalf("load config: %v", err)
 	}
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	services, err := buildServices(ctx, cfg, cfgPath)
 	if err != nil {
 		log.Fatalf("build services: %v", err)
@@ -69,7 +72,19 @@ func main() {
 
 	adminAddr := fmt.Sprintf("%s:%d", cfg.AdminHost, cfg.AdminPort)
 	log.Printf("admin listening on http://%s", adminAddr)
-	log.Fatal(http.ListenAndServe(adminAddr, services.admin))
+	adminServer := &http.Server{Addr: adminAddr, Handler: services.admin}
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = adminServer.Shutdown(shutdownCtx)
+		for _, listener := range services.listeners {
+			_ = listener.Close()
+		}
+	}()
+	if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
 func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (services, error) {
@@ -113,6 +128,22 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 				return loadNodes(ctx, cfg)
 			}),
 			admin.WithNodeChecker(nodecheck.Checker{Timeout: 3 * time.Second}.Check),
+			admin.WithRestarter(func(ctx context.Context) error {
+				go func() {
+					time.Sleep(200 * time.Millisecond)
+					process, err := os.FindProcess(os.Getpid())
+					if err != nil {
+						log.Printf("find process for restart: %v", err)
+						os.Exit(0)
+						return
+					}
+					if err := process.Signal(syscall.SIGTERM); err != nil {
+						log.Printf("signal process for restart: %v", err)
+						os.Exit(0)
+					}
+				}()
+				return nil
+			}),
 		),
 		nodes:      nodes,
 		channels:   manager,
