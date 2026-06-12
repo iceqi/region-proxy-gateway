@@ -37,3 +37,23 @@ func TestValidateRejectsEmptyPassword(t *testing.T) {
 		t.Fatalf("expected empty proxy password error")
 	}
 }
+
+func TestValidateAcceptsKnownTunnelBackends(t *testing.T) {
+	for _, backend := range []string{"fake", "openvpn"} {
+		t.Run(backend, func(t *testing.T) {
+			cfg := Default()
+			cfg.TunnelBackend = backend
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate returned error for %q: %v", backend, err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsUnknownTunnelBackend(t *testing.T) {
+	cfg := Default()
+	cfg.TunnelBackend = "wireguard"
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected unknown tunnel backend error")
+	}
+}

@@ -2,6 +2,11 @@ package config
 
 import "fmt"
 
+const (
+	TunnelBackendFake    = "fake"
+	TunnelBackendOpenVPN = "openvpn"
+)
+
 type Config struct {
 	ProxyHost            string   `json:"proxy_host"`
 	ProxyPort            int      `json:"proxy_port"`
@@ -17,6 +22,7 @@ type Config struct {
 	AllowedRotateMinutes []int    `json:"allowed_rotate_minutes"`
 	DataDir              string   `json:"data_dir"`
 	OpenVPNCommand       string   `json:"openvpn_command"`
+	TunnelBackend        string   `json:"tunnel_backend"`
 }
 
 func Default() Config {
@@ -35,6 +41,7 @@ func Default() Config {
 		AllowedRotateMinutes: []int{0, 5, 10, 30, 60},
 		DataDir:              "./data",
 		OpenVPNCommand:       "openvpn",
+		TunnelBackend:        TunnelBackendFake,
 	}
 }
 
@@ -65,6 +72,11 @@ func (c Config) Validate() error {
 	}
 	if len(c.AllowedRotateMinutes) == 0 {
 		return fmt.Errorf("at least one rotation value must be allowed")
+	}
+	switch c.TunnelBackend {
+	case TunnelBackendFake, TunnelBackendOpenVPN:
+	default:
+		return fmt.Errorf("tunnel backend must be one of: fake, openvpn")
 	}
 	return nil
 }
