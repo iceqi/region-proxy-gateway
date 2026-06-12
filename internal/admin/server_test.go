@@ -47,9 +47,13 @@ func TestStatusReturnsChannelsAndConnections(t *testing.T) {
 
 func TestChannelsReturnsSnapshots(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
-	server := NewServer(manager, nodes, nil)
+	cfg := config.Default()
+	cfg.ProxyUsername = "alice"
+	cfg.ProxyPassword = "secret"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg))
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -58,7 +62,7 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 		t.Fatalf("expected status 200, got %d", rec.Code)
 	}
 	var body struct {
-		Channels []channel.Snapshot `json:"channels"`
+		Channels []channelView `json:"channels"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -68,6 +72,9 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	}
 	if body.Channels[0].ID != "jp-3000" {
 		t.Fatalf("channel id = %q, want jp-3000", body.Channels[0].ID)
+	}
+	if body.Channels[0].ProxyAuthHTTP != "http://alice:secret@127.0.0.1:3000" {
+		t.Fatalf("auth http = %q", body.Channels[0].ProxyAuthHTTP)
 	}
 }
 

@@ -151,7 +151,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{"settings": s.safeSettings()})
 	case "/api/channels":
 		s.writeJSON(w, http.StatusOK, map[string]any{
-			"channels": s.channelList(),
+			"channels": s.channelViewList(),
 		})
 	case "/api/connections":
 		s.writeJSON(w, http.StatusOK, map[string]any{
@@ -390,6 +390,30 @@ func (s *Server) channelList() []channel.Snapshot {
 		return []channel.Snapshot{}
 	}
 	return s.channels.Snapshots()
+}
+
+type channelView struct {
+	channel.Snapshot
+	ProxyAuthHTTP   string `json:"proxy_auth_http"`
+	ProxyAuthSOCKS5 string `json:"proxy_auth_socks5"`
+}
+
+func (s *Server) channelViewList() []channelView {
+	snapshots := s.channelList()
+	views := make([]channelView, 0, len(snapshots))
+	s.configMu.Lock()
+	proxyUser := s.config.ProxyUsername
+	proxyPass := s.config.ProxyPassword
+	s.configMu.Unlock()
+	for _, snapshot := range snapshots {
+		view := channelView{Snapshot: snapshot}
+		if proxyUser != "" || proxyPass != "" {
+			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", proxyUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+			view.ProxyAuthSOCKS5 = fmt.Sprintf("socks5://%s:%s@%s:%d", proxyUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+		}
+		views = append(views, view)
+	}
+	return views
 }
 
 func (s *Server) connectionCount() int {
