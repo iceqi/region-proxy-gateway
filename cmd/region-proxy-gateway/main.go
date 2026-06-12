@@ -8,6 +8,7 @@ import (
 
 	"github.com/iceqi/region-proxy-gateway/internal/admin"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/connection"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/session"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
@@ -43,5 +44,5 @@ func buildAdminServer(cfg config.Config) *admin.Server {
 		return tunnel.NewFake(key)
 	}
 	sessions := session.NewManager(nodes, cfg.MaxActiveSessions, factory)
-	return admin.NewServer(sessions, nodes)
+	return admin.NewServer(sessions, nodes, connection.NewTracker())
 }
