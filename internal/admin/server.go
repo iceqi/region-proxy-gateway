@@ -15,12 +15,14 @@ import (
 )
 
 type Server struct {
-	channels    *channel.Manager
-	nodes       *node.Store
-	connections *connection.Tracker
-	configPath  string
-	config      config.Config
-	configMu    sync.Mutex
+	channels     *channel.Manager
+	nodes        *node.Store
+	connections  *connection.Tracker
+	refreshNodes func(context.Context) ([]node.Node, error)
+	configPath   string
+	config       config.Config
+	configMu     sync.Mutex
+	adminPath    string
 }
 
 type Option func(*Server)
@@ -29,6 +31,19 @@ func WithConfig(path string, cfg config.Config) Option {
 	return func(s *Server) {
 		s.configPath = path
 		s.config = cfg
+		s.adminPath = normalizeAdminPath(cfg.AdminPath)
+	}
+}
+
+func WithAdminPath(path string) Option {
+	return func(s *Server) {
+		s.adminPath = normalizeAdminPath(path)
+	}
+}
+
+func WithNodeRefresher(refresh func(context.Context) ([]node.Node, error)) Option {
+	return func(s *Server) {
+		s.refreshNodes = refresh
 	}
 }
 
@@ -37,6 +52,7 @@ func NewServer(channels *channel.Manager, nodes *node.Store, connections *connec
 		channels:    channels,
 		nodes:       nodes,
 		connections: connections,
+		adminPath:   "/admin",
 	}
 	for _, opt := range opts {
 		opt(server)
@@ -45,10 +61,21 @@ func NewServer(channels *channel.Manager, nodes *node.Store, connections *connec
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/" {
+	if r.URL.Path == s.adminPath || r.URL.Path == s.adminPath+"/" {
 		s.writeHTML(w, http.StatusOK, indexHTML)
 		return
 	}
+	if !strings.HasPrefix(r.URL.Path, s.adminPath+"/") {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+
+	originalPath := r.URL.Path
+	r.URL.Path = strings.TrimPrefix(r.URL.Path, s.adminPath)
+	if r.URL.Path == "" {
+		r.URL.Path = "/"
+	}
+	defer func() { r.URL.Path = originalPath }()
 
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/channels/") && strings.HasSuffix(r.URL.Path, "/switch") {
 		s.handleSwitch(w, r)
@@ -56,6 +83,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/channels" {
 		s.handleSaveChannel(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/nodes/refresh" {
+		s.handleRefreshNodes(w, r)
 		return
 	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/channels/") {
@@ -91,6 +122,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func normalizeAdminPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/admin"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		return "/admin"
+	}
+	return path
 }
 
 func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +198,22 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+}
+
+func (s *Server) handleRefreshNodes(w http.ResponseWriter, r *http.Request) {
+	if s.refreshNodes == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node refresher is not configured"})
+		return
+	}
+	nodes, err := s.refreshNodes(r.Context())
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.nodes != nil {
+		s.nodes.Replace(nodes)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {

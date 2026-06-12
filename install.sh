@@ -65,12 +65,14 @@ else
 fi
 
 ADMIN_PORT=""
+ADMIN_PATH=""
 if [[ -f "${INSTALL_DIR}/data/config.json" ]]; then
   ADMIN_PORT="$(grep -m1 '"admin_port"' "${INSTALL_DIR}/data/config.json" | sed -E 's/[^0-9]*([0-9]+).*/\1/' || true)"
+  ADMIN_PATH="$(grep -m1 '"admin_path"' "${INSTALL_DIR}/data/config.json" | sed -E 's/.*"admin_path"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/' || true)"
 fi
 
 if [[ -n "${ADMIN_PORT}" ]]; then
-  echo "Admin: http://127.0.0.1:${ADMIN_PORT}"
+  echo "Admin: http://127.0.0.1:${ADMIN_PORT}${ADMIN_PATH:-/admin}"
 else
   echo "Admin: see ${INSTALL_DIR}/data/config.json"
 fi

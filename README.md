@@ -21,6 +21,7 @@
 - 每个通道独立配置地区、端口、固定/轮换模式。
 - VPNGate CSV 节点解析。
 - 管理面板查看通道、节点、在线连接。
+- 管理面板随机端口和随机 path。
 - Fake backend 本地测试。
 - OpenVPN backend 进程生命周期。
 - Linux 下 OpenVPN 出站 socket 绑定到通道设备，如 `rpg0`、`rpg1`。
@@ -49,6 +50,7 @@ data/config.json
 {
   "admin_host": "127.0.0.1",
   "admin_port": 28765,
+  "admin_path": "/admin-gJ8mK2xP9qR4sT6v",
   "admin_username": "admin",
   "admin_password": "change-me-admin",
   "proxy_username": "proxy",
@@ -94,10 +96,10 @@ socks5://proxy:change-me-proxy@1.2.3.4:3000
 
 ## 管理面板
 
-首次生成配置时，管理端口会自动选择一个随机未占用的高位端口。实际地址以 `data/config.json` 里的 `admin_port` 为准。
+首次生成配置时，管理端口和管理 path 都会随机生成。实际地址以 `data/config.json` 里的 `admin_port` 和 `admin_path` 为准。
 
 ```text
-http://127.0.0.1:<admin_port>
+http://127.0.0.1:<admin_port><admin_path>
 ```
 
 当前面板支持查看：
@@ -108,6 +110,7 @@ http://127.0.0.1:<admin_port>
 - 在线连接。
 - 新建、编辑、删除通道配置。
 - 选择节点并立即切换当前通道出口。
+- 手动更新 VPNGate 节点列表。
 
 新增、编辑、删除通道会保存到 `data/config.json`。新增端口监听需要重启服务后生效：
 

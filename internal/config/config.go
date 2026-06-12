@@ -22,6 +22,7 @@ const (
 type Config struct {
 	AdminHost           string    `json:"admin_host"`
 	AdminPort           int       `json:"admin_port"`
+	AdminPath           string    `json:"admin_path"`
 	AdminUsername       string    `json:"admin_username"`
 	AdminPassword       string    `json:"admin_password"`
 	ProxyUsername       string    `json:"proxy_username"`
@@ -48,6 +49,7 @@ func Default() Config {
 	return Config{
 		AdminHost:           "127.0.0.1",
 		AdminPort:           8787,
+		AdminPath:           "/admin",
 		AdminUsername:       "admin",
 		AdminPassword:       "change-me-admin",
 		ProxyUsername:       "proxy",
@@ -80,10 +82,26 @@ func LoadOrCreate(path string) (Config, error) {
 	}
 	cfg = Default()
 	cfg.AdminPort = chooseAdminPort(cfg.AdminHost, cfg.AdminPort, usedChannelPorts(cfg.Channels))
+	cfg.AdminPath = randomAdminPath()
 	if err := Save(path, cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func randomAdminPath() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	var builder strings.Builder
+	builder.WriteString("/admin-")
+	for i := 0; i < 16; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			builder.WriteByte('x')
+			continue
+		}
+		builder.WriteByte(alphabet[n.Int64()])
+	}
+	return builder.String()
 }
 
 func chooseAdminPort(host string, fallback int, blocked map[int]struct{}) int {
@@ -174,6 +192,16 @@ func (c *Config) normalize() {
 	if c.AdminHost == "" {
 		c.AdminHost = "127.0.0.1"
 	}
+	if c.AdminPath == "" {
+		c.AdminPath = "/admin"
+	}
+	if !strings.HasPrefix(c.AdminPath, "/") {
+		c.AdminPath = "/" + c.AdminPath
+	}
+	c.AdminPath = strings.TrimRight(c.AdminPath, "/")
+	if c.AdminPath == "" {
+		c.AdminPath = "/admin"
+	}
 	if c.DataDir == "" {
 		c.DataDir = "./data"
 	}
@@ -201,6 +229,12 @@ func (c *Config) normalize() {
 func (c Config) Validate() error {
 	if c.AdminPort < 1 || c.AdminPort > 65535 {
 		return fmt.Errorf("admin port must be 1-65535")
+	}
+	if c.AdminPath == "/" {
+		return fmt.Errorf("admin path must not be root")
+	}
+	if strings.Contains(c.AdminPath, " ") {
+		return fmt.Errorf("admin path must not contain spaces")
 	}
 	if c.AdminUsername == "" {
 		return fmt.Errorf("admin username is required")

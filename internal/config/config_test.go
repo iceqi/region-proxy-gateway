@@ -3,6 +3,7 @@ package config
 import (
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,6 +15,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if cfg.AdminHost != "127.0.0.1" {
 		t.Fatalf("AdminHost = %q, want 127.0.0.1", cfg.AdminHost)
 	}
+	if cfg.AdminPath == "" {
+		t.Fatalf("AdminPath is empty")
+	}
 	if len(cfg.Channels) != 1 {
 		t.Fatalf("default channels = %d, want 1", len(cfg.Channels))
 	}
@@ -22,6 +26,19 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	}
 	if cfg.Channels[0].Region != "jp" {
 		t.Fatalf("default channel region = %q, want jp", cfg.Channels[0].Region)
+	}
+}
+
+func TestLoadOrCreateChoosesRandomAdminPath(t *testing.T) {
+	cfg, err := LoadOrCreate(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+	if !strings.HasPrefix(cfg.AdminPath, "/admin-") {
+		t.Fatalf("admin path = %q, want /admin-*", cfg.AdminPath)
+	}
+	if len(cfg.AdminPath) < len("/admin-")+12 {
+		t.Fatalf("admin path = %q, too short", cfg.AdminPath)
 	}
 }
 

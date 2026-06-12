@@ -22,7 +22,7 @@ func TestStatusReturnsChannelsAndConnections(t *testing.T) {
 	connections.Start("127.0.0.1:12345", "http", "jp-3000", "example.com:443")
 	server := NewServer(manager, nodes, connections)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/status", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -49,7 +49,7 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -76,7 +76,7 @@ func TestNodesCanFilterByRegion(t *testing.T) {
 	nodes.Replace(append(nodes.List(), node.Node{ID: "us-1", Region: "us", Available: true}))
 	server := NewServer(manager, nodes, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/nodes?region=jp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/nodes?region=jp", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -95,11 +95,31 @@ func TestNodesCanFilterByRegion(t *testing.T) {
 	}
 }
 
+func TestRefreshNodesReplacesNodeStore(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	server := NewServer(manager, nodes, nil, WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
+		return []node.Node{{ID: "us-new", Region: "us", Available: true}}, nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/nodes/refresh", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := nodes.List()
+	if len(got) != 1 || got[0].ID != "us-new" {
+		t.Fatalf("nodes = %+v, want us-new", got)
+	}
+}
+
 func TestIndexReturnsHTML(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
-	server := NewServer(manager, nodes, nil)
+	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/secret-admin", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -112,12 +132,31 @@ func TestIndexReturnsHTML(t *testing.T) {
 	}
 }
 
+func TestAdminPathHidesRootAndScopesAPI(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))
+
+	rootReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	rootRec := httptest.NewRecorder()
+	server.ServeHTTP(rootRec, rootReq)
+	if rootRec.Code != http.StatusNotFound {
+		t.Fatalf("root status = %d, want 404", rootRec.Code)
+	}
+
+	apiReq := httptest.NewRequest(http.MethodGet, "/secret-admin/api/nodes", nil)
+	apiRec := httptest.NewRecorder()
+	server.ServeHTTP(apiRec, apiReq)
+	if apiRec.Code != http.StatusOK {
+		t.Fatalf("scoped api status = %d, want 200", apiRec.Code)
+	}
+}
+
 func TestSwitchChannelToNode(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", Available: true}))
 	server := NewServer(manager, nodes, nil)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/channels/jp-3000/switch", bytes.NewBufferString(`{"node_id":"jp-2"}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels/jp-3000/switch", bytes.NewBufferString(`{"node_id":"jp-2"}`))
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -148,7 +187,7 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	}}
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
-	req := httptest.NewRequest(http.MethodPost, "/api/channels", bytes.NewBufferString(`{"id":"us-3001","listen_host":"0.0.0.0","listen_port":3001,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"id":"us-3001","listen_host":"0.0.0.0","listen_port":3001,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -181,7 +220,7 @@ func TestDeleteChannelPersistsConfig(t *testing.T) {
 	}
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
-	req := httptest.NewRequest(http.MethodDelete, "/api/channels/us-3001", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/channels/us-3001", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)

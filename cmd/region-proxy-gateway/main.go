@@ -103,7 +103,12 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	}
 
 	return services{
-		admin:      admin.NewServer(manager, nodes, tracker, admin.WithConfig(cfgPath, cfg)),
+		admin: admin.NewServer(manager, nodes, tracker,
+			admin.WithConfig(cfgPath, cfg),
+			admin.WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
+				return loadNodes(ctx, cfg)
+			}),
+		),
 		nodes:      nodes,
 		channels:   manager,
 		tracker:    tracker,

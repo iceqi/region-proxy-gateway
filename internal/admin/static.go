@@ -75,7 +75,7 @@ const indexHTML = `<!doctype html>
       </table>
     </section>
     <section>
-      <h2>节点</h2>
+      <h2>节点 <button onclick="refreshNodes()">手动更新节点</button></h2>
       <table>
         <thead><tr><th>ID</th><th>地区</th><th>主机</th><th>IP</th><th>Ping</th><th>速度</th></tr></thead>
         <tbody id="nodes"><tr><td colspan="6" class="muted">加载中</td></tr></tbody>
@@ -105,16 +105,16 @@ const indexHTML = `<!doctype html>
         enabled: value('enabled') === 'true'
       };
       if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
-      await request('/api/channels', { method: 'POST', body: JSON.stringify(channel) });
+      await request('api/channels', { method: 'POST', body: JSON.stringify(channel) });
       showNotice('通道配置已保存，需要重启 region-proxy-gateway 后端口监听才会生效。');
       await load();
     });
 
     async function load() {
       const [channelsRes, connectionsRes, nodesRes] = await Promise.all([
-        fetch('/api/channels'),
-        fetch('/api/connections'),
-        fetch('/api/nodes')
+        fetch('api/channels'),
+        fetch('api/connections'),
+        fetch('api/nodes')
       ]);
       const channels = (await channelsRes.json()).channels || [];
       const connections = (await connectionsRes.json()).connections || [];
@@ -183,7 +183,7 @@ const indexHTML = `<!doctype html>
     async function switchNode(channelID) {
       const select = document.getElementById('node-' + channelID);
       if (!select || !select.value) return showNotice('请先选择节点');
-      await request('/api/channels/' + encodeURIComponent(channelID) + '/switch', {
+      await request('api/channels/' + encodeURIComponent(channelID) + '/switch', {
         method: 'POST',
         body: JSON.stringify({ node_id: select.value })
       });
@@ -193,8 +193,15 @@ const indexHTML = `<!doctype html>
 
     async function deleteChannel(channelID) {
       if (!confirm('删除通道 ' + channelID + '？保存后需要重启服务生效。')) return;
-      await request('/api/channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
+      await request('api/channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
       showNotice('通道已删除，需要重启 region-proxy-gateway 后生效。');
+      await load();
+    }
+
+    async function refreshNodes() {
+      showNotice('正在更新节点...');
+      await request('api/nodes/refresh', { method: 'POST' });
+      showNotice('节点已更新。');
       await load();
     }
 

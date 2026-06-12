@@ -24,7 +24,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	defer services.channels.Stop(context.Background())
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
 	services.admin.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -62,7 +62,7 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 	services.tracker.Start("127.0.0.1:50000", "http", "jp-3000", "example.com:443")
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
 	services.admin.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
