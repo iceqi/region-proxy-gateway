@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/admin"
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
+	"github.com/iceqi/region-proxy-gateway/internal/ipinfo"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
+	"github.com/iceqi/region-proxy-gateway/internal/nodecheck"
 	"github.com/iceqi/region-proxy-gateway/internal/proxy"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 	"github.com/iceqi/region-proxy-gateway/internal/vpngate"
@@ -92,6 +95,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	if err := manager.Start(ctx); err != nil {
 		return services{}, err
 	}
+	startNodeUpdater(ctx, cfg, nodes)
 
 	proxies := make([]*proxy.Server, 0, len(cfg.Channels))
 	for _, ch := range cfg.Channels {
@@ -108,6 +112,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 			admin.WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
 				return loadNodes(ctx, cfg)
 			}),
+			admin.WithNodeChecker(nodecheck.Checker{Timeout: 3 * time.Second}.Check),
 		),
 		nodes:      nodes,
 		channels:   manager,
@@ -128,7 +133,41 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("vpngate returned no nodes")
 	}
-	return nodes, nil
+	enriched, err := (ipinfo.Client{}).Enrich(ctx, nodes)
+	if err != nil {
+		log.Printf("ip info enrich failed: %v", err)
+		return nodes, nil
+	}
+	return enriched, nil
+}
+
+func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store) {
+	if store == nil {
+		return
+	}
+	interval, err := config.ParseNodeRefreshInterval(cfg.NodeRefreshInterval)
+	if err != nil {
+		log.Printf("node refresh interval disabled: %v", err)
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				nodes, err := loadNodes(ctx, cfg)
+				if err != nil {
+					log.Printf("scheduled node update failed: %v", err)
+					continue
+				}
+				store.Replace(nodes)
+				log.Printf("scheduled node update loaded %d nodes", len(nodes))
+			}
+		}
+	}()
 }
 
 func tunnelFactory(cfg config.Config) channel.TunnelFactory {
@@ -146,7 +185,7 @@ func tunnelFactory(cfg config.Config) channel.TunnelFactory {
 
 func demoNodes() []node.Node {
 	return []node.Node{
-		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", LatencyMS: 50, Speed: 1000, Available: true},
-		{ID: "us-demo", Region: "us", IP: "198.51.100.10", Hostname: "us-demo", LatencyMS: 60, Speed: 900, Available: true},
+		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Port: 1194, Proto: "udp", LatencyMS: 50, Speed: 1000, Available: true, IPType: "residential", Quality: "normal", PurityScore: 90, Owner: "Demo Home ISP"},
+		{ID: "us-demo", Region: "us", IP: "198.51.100.10", Hostname: "us-demo", Port: 443, Proto: "tcp", LatencyMS: 60, Speed: 900, Available: true, IPType: "hosting", Quality: "datacenter", PurityScore: 45, Owner: "Demo Cloud"},
 	}
 }

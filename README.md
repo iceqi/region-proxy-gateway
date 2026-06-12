@@ -22,6 +22,9 @@
 - VPNGate CSV 节点解析。
 - 管理面板查看通道、节点、在线连接。
 - 管理面板随机端口和随机 path。
+- 管理面板更新节点、筛选节点、测速节点。
+- 节点显示住宅/家宽、机房、移动网、代理风险等基础 IP 类型。
+- 节点显示基础纯净度评分。
 - Fake backend 本地测试。
 - OpenVPN backend 进程生命周期。
 - Linux 下 OpenVPN 出站 socket 绑定到通道设备，如 `rpg0`、`rpg1`。
@@ -35,6 +38,21 @@ https://www.vpngate.net/api/iphone/
 ```
 
 程序会解析 CSV 里的 `OpenVPN_ConfigData_Base64`，不需要你手工维护 `nodes.json`。
+
+节点 IP 类型和基础纯净度来自：
+
+```text
+http://ip-api.com/batch
+```
+
+它会返回 `proxy`、`hosting`、`mobile`、ASN、运营商等字段。程序按这些字段做基础判断：
+
+- `residential`：住宅/家宽，基础纯净度较高。
+- `hosting`：机房/数据中心。
+- `mobile`：移动网络。
+- `proxy`：代理风险。
+
+这个纯净度是基础风险判断，不等于付费风控库的最终结论。`ip.net.coffee` 可以当人工复核工具使用，但目前没有看到公开稳定的 API 文档，所以没有直接依赖它。
 
 ## 配置文件
 
@@ -111,6 +129,17 @@ http://127.0.0.1:<admin_port><admin_path>
 - 新建、编辑、删除通道配置。
 - 选择节点并立即切换当前通道出口。
 - 手动更新 VPNGate 节点列表。
+- 筛选地区、IP 类型、质量、可用状态、最大延迟、ASN/运营商关键字。
+- 对单个节点测速。
+- 从节点列表右侧选择通道，并切换该通道到当前节点。
+
+测速说明：
+
+- 优先使用系统 `ping` 获取延迟。
+- TCP OpenVPN 节点会额外做 TCP 端口连通检查。
+- UDP OpenVPN 节点无法在不真正建立 VPN 握手的情况下完整验证端口，只能判断主机 ping 可达和延迟。
+
+自动更新节点间隔由 `node_refresh_interval` 控制，比如 `20m`、`1h`。管理面板可以保存这个值，重启服务后生效。
 
 新增、编辑、删除通道会保存到 `data/config.json`。新增端口监听需要重启服务后生效：
 

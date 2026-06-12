@@ -86,3 +86,28 @@ func TestBestByRegionReturnsFalseWhenNoAvailableNode(t *testing.T) {
 		t.Fatalf("expected no available jp node, got %+v", got)
 	}
 }
+
+func TestUpdateNodeReplacesMatchingNode(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-1", Region: "jp", LatencyMS: 100, Available: true},
+		{ID: "us-1", Region: "us", LatencyMS: 200, Available: true},
+	})
+
+	ok := store.Update("jp-1", func(n Node) Node {
+		n.LatencyMS = 25
+		n.FailReason = ""
+		return n
+	})
+
+	if !ok {
+		t.Fatalf("expected update to find node")
+	}
+	nodes := store.List()
+	if nodes[0].LatencyMS != 25 {
+		t.Fatalf("latency = %d, want 25", nodes[0].LatencyMS)
+	}
+	if nodes[1].LatencyMS != 200 {
+		t.Fatalf("other node latency = %d, want 200", nodes[1].LatencyMS)
+	}
+}

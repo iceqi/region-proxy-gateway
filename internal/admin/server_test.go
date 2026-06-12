@@ -115,6 +115,55 @@ func TestRefreshNodesReplacesNodeStore(t *testing.T) {
 	}
 }
 
+func TestProbeNodeUpdatesNodeStore(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	server := NewServer(manager, nodes, nil, WithNodeChecker(func(ctx context.Context, n node.Node) node.Node {
+		n.LatencyMS = 33
+		n.Available = true
+		n.ProbeStatus = "available"
+		return n
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/nodes/jp-1/probe", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	got := nodes.List()[0]
+	if got.LatencyMS != 33 || got.ProbeStatus != "available" {
+		t.Fatalf("node not updated after probe: %+v", got)
+	}
+}
+
+func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"7m"}`))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.NodeRefreshInterval != "7m" {
+		t.Fatalf("node refresh interval = %q, want 7m", loaded.NodeRefreshInterval)
+	}
+}
+
 func TestIndexReturnsHTML(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))

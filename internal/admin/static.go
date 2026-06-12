@@ -8,30 +8,38 @@ const indexHTML = `<!doctype html>
   <title>Region Proxy Gateway</title>
   <style>
     :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f6f7f9; color: #1f2933; }
-    header { padding: 18px 24px; background: #fff; border-bottom: 1px solid #dde3ea; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-    h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
-    main { max-width: 1180px; margin: 0 auto; padding: 20px; }
-    section { margin-bottom: 24px; }
-    h2 { font-size: 16px; margin: 0 0 12px; }
+    body { margin: 0; background: #f5f7fa; color: #1f2933; }
+    header { padding: 16px 22px; background: #fff; border-bottom: 1px solid #dde3ea; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+    h1 { margin: 0; font-size: 21px; letter-spacing: 0; }
+    main { max-width: 1320px; margin: 0 auto; padding: 18px; }
+    section { margin-bottom: 20px; }
+    h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
     table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dde3ea; }
-    th, td { padding: 10px 12px; border-bottom: 1px solid #edf1f5; text-align: left; font-size: 14px; vertical-align: top; }
-    th { background: #eef3f8; color: #344054; }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    th, td { padding: 9px 10px; border-bottom: 1px solid #edf1f5; text-align: left; font-size: 13px; vertical-align: top; }
+    th { background: #eef3f8; color: #344054; white-space: nowrap; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
     label { display: grid; gap: 5px; font-size: 13px; color: #344054; }
-    input, select { min-height: 34px; border: 1px solid #c9d3df; border-radius: 6px; padding: 6px 8px; font: inherit; background: #fff; }
-    button { min-height: 34px; border: 1px solid #b8c4d1; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; font: inherit; }
+    input, select { min-height: 33px; border: 1px solid #c9d3df; border-radius: 6px; padding: 6px 8px; font: inherit; background: #fff; min-width: 0; }
+    button { min-height: 33px; border: 1px solid #b8c4d1; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; font: inherit; }
     button.primary { background: #1769aa; color: #fff; border-color: #1769aa; }
     button.danger { color: #b42318; border-color: #f1b8b2; }
-    .grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 12px; align-items: end; background: #fff; border: 1px solid #dde3ea; padding: 14px; }
+    button:disabled { opacity: .55; cursor: wait; }
+    .grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 11px; align-items: end; background: #fff; border: 1px solid #dde3ea; padding: 14px; }
+    .filters { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 10px; align-items: end; background: #fff; border: 1px solid #dde3ea; padding: 12px; margin-bottom: 10px; }
     .muted { color: #667085; }
     .notice { padding: 10px 12px; background: #fff8db; border: 1px solid #ead88b; margin-bottom: 14px; font-size: 14px; display: none; }
-    .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
     .node-select { max-width: 220px; }
-    @media (max-width: 860px) {
+    .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d8e0e8; background: #f8fafc; white-space: nowrap; }
+    .good { background: #ecfdf3; color: #067647; border-color: #abefc6; }
+    .warn { background: #fffaeb; color: #b54708; border-color: #fedf89; }
+    .bad { background: #fef3f2; color: #b42318; border-color: #fecdca; }
+    .nowrap { white-space: nowrap; }
+    .host { max-width: 210px; overflow-wrap: anywhere; }
+    @media (max-width: 980px) {
       header { align-items: flex-start; flex-direction: column; }
       main { padding: 12px; }
-      .grid { grid-template-columns: 1fr 1fr; }
+      .grid, .filters { grid-template-columns: 1fr 1fr; }
       table { display: block; overflow-x: auto; }
     }
   </style>
@@ -39,10 +47,21 @@ const indexHTML = `<!doctype html>
 <body>
   <header>
     <h1>Region Proxy Gateway</h1>
-    <button onclick="load()">刷新</button>
+    <div class="actions">
+      <button onclick="load()">刷新页面</button>
+      <button class="primary" onclick="updateNodes()">更新节点</button>
+    </div>
   </header>
   <main>
     <div id="notice" class="notice"></div>
+    <section>
+      <h2>设置</h2>
+      <form id="settings-form" class="grid">
+        <label>节点更新间隔<input id="node-refresh-interval" placeholder="20m"></label>
+        <button class="primary" type="submit">保存设置</button>
+        <span class="muted">保存后重启服务，定时更新间隔才会重新加载。</span>
+      </form>
+    </section>
     <section>
       <h2>新建或更新通道</h2>
       <form id="channel-form" class="grid">
@@ -75,10 +94,41 @@ const indexHTML = `<!doctype html>
       </table>
     </section>
     <section>
-      <h2>节点 <button onclick="refreshNodes()">手动更新节点</button></h2>
+      <h2>节点 <span id="node-count" class="muted"></span></h2>
+      <div class="filters">
+        <label>地区<select id="filter-region" onchange="renderNodes()"></select></label>
+        <label>IP 类型
+          <select id="filter-ip-type" onchange="renderNodes()">
+            <option value="">全部</option>
+            <option value="residential">住宅/家宽</option>
+            <option value="hosting">机房</option>
+            <option value="mobile">移动网</option>
+            <option value="proxy">代理</option>
+          </select>
+        </label>
+        <label>质量
+          <select id="filter-quality" onchange="renderNodes()">
+            <option value="">全部</option>
+            <option value="normal">普通</option>
+            <option value="datacenter">数据中心</option>
+            <option value="mobile">移动端</option>
+            <option value="proxy">代理风险</option>
+          </select>
+        </label>
+        <label>状态
+          <select id="filter-available" onchange="renderNodes()">
+            <option value="">全部</option>
+            <option value="true">可用</option>
+            <option value="false">不可用</option>
+          </select>
+        </label>
+        <label>最大延迟<input id="filter-max-latency" type="number" min="0" placeholder="ms" oninput="renderNodes()"></label>
+        <label>关键字<input id="filter-keyword" placeholder="IP/ASN/运营商" oninput="renderNodes()"></label>
+        <label>显示数量<input id="filter-limit" type="number" min="10" max="500" value="120" oninput="renderNodes()"></label>
+      </div>
       <table>
-        <thead><tr><th>ID</th><th>地区</th><th>主机</th><th>IP</th><th>Ping</th><th>速度</th></tr></thead>
-        <tbody id="nodes"><tr><td colspan="6" class="muted">加载中</td></tr></tbody>
+        <thead><tr><th>地区</th><th>主机 / IP</th><th>协议</th><th>延迟</th><th>住宅/机房</th><th>纯净度</th><th>ASN / 运营商</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="nodes"><tr><td colspan="9" class="muted">加载中</td></tr></tbody>
       </table>
     </section>
     <section>
@@ -91,6 +141,17 @@ const indexHTML = `<!doctype html>
   </main>
   <script>
     let allNodes = [];
+    let currentChannels = [];
+
+    document.getElementById('settings-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      await request('api/settings', {
+        method: 'POST',
+        body: JSON.stringify({ node_refresh_interval: value('node-refresh-interval') })
+      });
+      showNotice('设置已保存，重启服务后定时更新间隔生效。');
+      await load();
+    });
 
     document.getElementById('channel-form').addEventListener('submit', async event => {
       event.preventDefault();
@@ -111,16 +172,20 @@ const indexHTML = `<!doctype html>
     });
 
     async function load() {
-      const [channelsRes, connectionsRes, nodesRes] = await Promise.all([
+      const [statusRes, channelsRes, connectionsRes, nodesRes] = await Promise.all([
+        fetch('api/status'),
         fetch('api/channels'),
         fetch('api/connections'),
         fetch('api/nodes')
       ]);
-      const channels = (await channelsRes.json()).channels || [];
+      const status = await statusRes.json();
+      currentChannels = (await channelsRes.json()).channels || [];
       const connections = (await connectionsRes.json()).connections || [];
       allNodes = (await nodesRes.json()).nodes || [];
-      renderChannels(channels);
-      renderNodes(allNodes);
+      if (status.settings) setValue('node-refresh-interval', status.settings.node_refresh_interval || '20m');
+      renderChannels(currentChannels);
+      renderRegionFilter();
+      renderNodes();
       renderConnections(connections);
     }
 
@@ -135,24 +200,58 @@ const indexHTML = `<!doctype html>
           '<td><code>' + escapeHTML(ch.proxy_url_http) + '</code><br><code>' + escapeHTML(ch.proxy_url_socks5) + '</code></td>' +
           '<td><div class="actions">' +
             '<button onclick="fillForm(' + quote(ch.id) + ')">编辑</button>' +
-            '<select class="node-select" id="node-' + escapeAttr(ch.id) + '">' + nodeOptions(ch.region) + '</select>' +
-            '<button onclick="switchNode(' + quote(ch.id) + ')">切换</button>' +
+            '<select class="node-select" id="channel-node-' + escapeAttr(ch.id) + '">' + nodeOptions(ch.region) + '</select>' +
+            '<button onclick="switchChannelNode(' + quote(ch.id) + ', getSelectValue(' + quote('channel-node-' + ch.id) + '))">切换</button>' +
             '<button class="danger" onclick="deleteChannel(' + quote(ch.id) + ')">删除</button>' +
           '</div></td>' +
         '</tr>').join('') : '<tr><td colspan="7" class="muted">没有通道</td></tr>';
-      window.currentChannels = channels;
     }
 
-    function renderNodes(nodes) {
-      document.getElementById('nodes').innerHTML = nodes.length ? nodes.slice(0, 80).map(n =>
+    function renderRegionFilter() {
+      const select = document.getElementById('filter-region');
+      const current = select.value;
+      const regions = Array.from(new Set(allNodes.map(n => n.region).filter(Boolean))).sort();
+      select.innerHTML = '<option value="">全部</option>' + regions.map(r => '<option value="' + escapeAttr(r) + '">' + escapeHTML(r) + '</option>').join('');
+      select.value = regions.includes(current) ? current : '';
+    }
+
+    function renderNodes() {
+      const region = value('filter-region');
+      const ipType = value('filter-ip-type');
+      const quality = value('filter-quality');
+      const available = value('filter-available');
+      const maxLatency = numberValue('filter-max-latency');
+      const keyword = value('filter-keyword').toLowerCase();
+      const limit = numberValue('filter-limit') || 120;
+      const filtered = allNodes.filter(n => {
+        if (region && n.region !== region) return false;
+        if (ipType && n.ip_type !== ipType) return false;
+        if (quality && n.quality !== quality) return false;
+        if (available && String(Boolean(n.available)) !== available) return false;
+        if (maxLatency && (Number(n.latency_ms || 0) === 0 || Number(n.latency_ms) > maxLatency)) return false;
+        if (keyword) {
+          const hay = [n.id, n.ip, n.hostname, n.owner, n.asn, n.as_name, n.location].join(' ').toLowerCase();
+          if (!hay.includes(keyword)) return false;
+        }
+        return true;
+      });
+      document.getElementById('node-count').textContent = filtered.length + ' / ' + allNodes.length;
+      document.getElementById('nodes').innerHTML = filtered.length ? filtered.slice(0, limit).map(n =>
         '<tr>' +
-          '<td><code>' + escapeHTML(n.id) + '</code></td>' +
-          '<td>' + escapeHTML(n.region) + '</td>' +
-          '<td>' + escapeHTML(n.hostname) + '</td>' +
-          '<td><code>' + escapeHTML(n.ip) + '</code></td>' +
-          '<td>' + (n.latency_ms || '-') + '</td>' +
-          '<td>' + (n.speed || '-') + '</td>' +
-        '</tr>').join('') : '<tr><td colspan="6" class="muted">没有节点</td></tr>';
+          '<td class="nowrap">' + escapeHTML(n.region) + '<br><span class="muted">' + escapeHTML(n.country || '') + '</span></td>' +
+          '<td class="host"><code>' + escapeHTML(n.hostname || '-') + '</code><br><code>' + escapeHTML(n.ip || '-') + '</code></td>' +
+          '<td class="nowrap">' + escapeHTML((n.proto || 'udp') + ':' + (n.port || 1194)) + '</td>' +
+          '<td class="nowrap">' + (n.latency_ms ? n.latency_ms + ' ms' : '-') + '</td>' +
+          '<td>' + ipTypeBadge(n.ip_type) + '</td>' +
+          '<td>' + purityBadge(n) + '</td>' +
+          '<td class="host">' + escapeHTML(n.owner || '-') + '<br><span class="muted">' + escapeHTML(n.asn || n.as_name || '') + '</span></td>' +
+          '<td>' + statusBadge(n) + '<br><span class="muted">' + escapeHTML(n.probe_message || n.fail_reason || '') + '</span></td>' +
+          '<td><div class="actions">' +
+            '<button onclick="probeNode(' + quote(n.id) + ', this)">测速</button>' +
+            '<select id="node-channel-' + escapeAttr(n.id) + '">' + channelOptions(n.region) + '</select>' +
+            '<button class="primary" onclick="switchChannelNode(getSelectValue(' + quote('node-channel-' + n.id) + '), ' + quote(n.id) + ')">切换到此节点</button>' +
+          '</div></td>' +
+        '</tr>').join('') : '<tr><td colspan="9" class="muted">没有符合筛选条件的节点</td></tr>';
     }
 
     function renderConnections(connections) {
@@ -167,7 +266,7 @@ const indexHTML = `<!doctype html>
     }
 
     function fillForm(channelID) {
-      const ch = (window.currentChannels || []).find(item => item.id === channelID);
+      const ch = currentChannels.find(item => item.id === channelID);
       if (!ch) return;
       setValue('channel-id', ch.id);
       setValue('listen-host', ch.listen_host);
@@ -180,15 +279,27 @@ const indexHTML = `<!doctype html>
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
-    async function switchNode(channelID) {
-      const select = document.getElementById('node-' + channelID);
-      if (!select || !select.value) return showNotice('请先选择节点');
+    async function switchChannelNode(channelID, nodeID) {
+      if (!channelID) return showNotice('请先选择通道');
+      if (!nodeID) return showNotice('请先选择节点');
       await request('api/channels/' + encodeURIComponent(channelID) + '/switch', {
         method: 'POST',
-        body: JSON.stringify({ node_id: select.value })
+        body: JSON.stringify({ node_id: nodeID })
       });
       showNotice('已切换节点。');
       await load();
+    }
+
+    async function probeNode(nodeID, button) {
+      const oldText = button ? button.textContent : '';
+      if (button) { button.disabled = true; button.textContent = '测速中'; }
+      try {
+        await request('api/nodes/' + encodeURIComponent(nodeID) + '/probe', { method: 'POST' });
+        showNotice('测速完成。');
+        await load();
+      } finally {
+        if (button) { button.disabled = false; button.textContent = oldText; }
+      }
     }
 
     async function deleteChannel(channelID) {
@@ -198,8 +309,8 @@ const indexHTML = `<!doctype html>
       await load();
     }
 
-    async function refreshNodes() {
-      showNotice('正在更新节点...');
+    async function updateNodes() {
+      showNotice('正在更新节点，会重新从 VPNGate 拉取并补充 IP 类型。');
       await request('api/nodes/refresh', { method: 'POST' });
       showNotice('节点已更新。');
       await load();
@@ -215,12 +326,48 @@ const indexHTML = `<!doctype html>
     function nodeOptions(region) {
       const nodes = allNodes.filter(n => n.region === region);
       if (!nodes.length) return '<option value="">没有节点</option>';
-      return '<option value="">选择节点</option>' + nodes.slice(0, 100).map(n =>
-        '<option value="' + escapeAttr(n.id) + '">' + escapeHTML(n.id) + '</option>').join('');
+      return '<option value="">选择节点</option>' + nodes.slice(0, 150).map(n =>
+        '<option value="' + escapeAttr(n.id) + '">' + escapeHTML(nodeLabel(n)) + '</option>').join('');
     }
-    function value(id) { return document.getElementById(id).value.trim(); }
-    function numberValue(id) { return Number(document.getElementById(id).value || 0); }
-    function setValue(id, val) { document.getElementById(id).value = val == null ? '' : val; }
+
+    function channelOptions(region) {
+      const channels = currentChannels.filter(ch => ch.region === region && ch.enabled);
+      if (!channels.length) return '<option value="">没有同地区通道</option>';
+      return '<option value="">选择通道</option>' + channels.map(ch =>
+        '<option value="' + escapeAttr(ch.id) + '">' + escapeHTML(ch.id + ' :' + ch.listen_port) + '</option>').join('');
+    }
+
+    function nodeLabel(n) {
+      return [n.id, n.latency_ms ? n.latency_ms + 'ms' : '', ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');
+    }
+    function ipTypeBadge(type) {
+      const text = ipTypeText(type);
+      const cls = type === 'residential' ? 'good' : (type === 'hosting' || type === 'proxy' ? 'warn' : '');
+      return '<span class="badge ' + cls + '">' + escapeHTML(text || '未知') + '</span>';
+    }
+    function purityBadge(n) {
+      const score = Number(n.purity_score || 0);
+      const cls = score >= 75 ? 'good' : (score >= 40 ? 'warn' : 'bad');
+      return '<span class="badge ' + cls + '">' + (score ? score + '/100' : '未知') + ' ' + escapeHTML(qualityText(n.quality)) + '</span>';
+    }
+    function statusBadge(n) {
+      const ok = Boolean(n.available);
+      const status = n.probe_status || (ok ? 'available' : 'unavailable');
+      return '<span class="badge ' + (ok ? 'good' : 'bad') + '">' + escapeHTML(status === 'available' ? '可用' : '不可用') + '</span>';
+    }
+    function ipTypeText(type) {
+      return ({ residential: '住宅/家宽', hosting: '机房', mobile: '移动网', proxy: '代理' })[type] || type || '';
+    }
+    function qualityText(type) {
+      return ({ normal: '普通', datacenter: '数据中心', mobile: '移动端', proxy: '代理风险' })[type] || type || '';
+    }
+    function getSelectValue(id) {
+      const el = document.getElementById(id);
+      return el ? el.value : '';
+    }
+    function value(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
+    function numberValue(id) { return Number(value(id) || 0); }
+    function setValue(id, val) { const el = document.getElementById(id); if (el) el.value = val == null ? '' : val; }
     function showNotice(text) {
       const el = document.getElementById('notice');
       el.textContent = text;
@@ -232,7 +379,7 @@ const indexHTML = `<!doctype html>
       return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
     }
     load().catch(err => showNotice(err.message));
-    setInterval(() => load().catch(() => {}), 5000);
+    setInterval(() => load().catch(() => {}), 7000);
   </script>
 </body>
 </html>`

@@ -25,6 +25,20 @@ func (s *Store) List() []Node {
 	return append([]Node(nil), s.nodes...)
 }
 
+func (s *Store) Update(id string, update func(Node) Node) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.nodes {
+		if s.nodes[i].ID != id {
+			continue
+		}
+		s.nodes[i] = update(s.nodes[i])
+		return true
+	}
+	return false
+}
+
 func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

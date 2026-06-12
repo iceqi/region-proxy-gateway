@@ -100,12 +100,18 @@ func ParseCSV(r io.Reader) ([]node.Node, error) {
 		}
 
 		idSource := firstNonEmpty(host, ip)
+		remoteHost, remotePort, remoteProto := parseOpenVPNRemote(string(decoded))
+		if host == "" {
+			host = remoteHost
+		}
 		nodes = append(nodes, node.Node{
 			ID:        region + "-" + idSource,
 			Region:    region,
 			Country:   csvValue(record, header, "CountryLong"),
 			IP:        ip,
 			Hostname:  host,
+			Port:      remotePort,
+			Proto:     remoteProto,
 			OpenVPN:   string(decoded),
 			LatencyMS: parseInt(csvValue(record, header, "Ping")),
 			Speed:     parseInt64(csvValue(record, header, "Speed")),
@@ -153,4 +159,26 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseOpenVPNRemote(config string) (string, int, string) {
+	for _, line := range strings.Split(config, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 2 || fields[0] != "remote" {
+			continue
+		}
+		host := fields[1]
+		port := 1194
+		proto := "udp"
+		if len(fields) >= 3 {
+			if parsed := parseInt(fields[2]); parsed > 0 {
+				port = parsed
+			}
+		}
+		if len(fields) >= 4 {
+			proto = strings.ToLower(fields[3])
+		}
+		return host, port, proto
+	}
+	return "", 1194, "udp"
 }

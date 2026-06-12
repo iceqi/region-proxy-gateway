@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -253,6 +254,9 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("tunnel backend must be one of: fake, openvpn")
 	}
+	if _, err := ParseNodeRefreshInterval(c.NodeRefreshInterval); err != nil {
+		return err
+	}
 	if len(c.Channels) == 0 {
 		return fmt.Errorf("at least one channel is required")
 	}
@@ -273,6 +277,21 @@ func (c Config) Validate() error {
 		ports[ch.ListenPort] = ch.ID
 	}
 	return nil
+}
+
+func ParseNodeRefreshInterval(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "20m"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("node refresh interval is invalid: %w", err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("node refresh interval must be > 0")
+	}
+	return duration, nil
 }
 
 func (ch Channel) Validate() error {

@@ -19,6 +19,7 @@ type Server struct {
 	nodes        *node.Store
 	connections  *connection.Tracker
 	refreshNodes func(context.Context) ([]node.Node, error)
+	checkNode    func(context.Context, node.Node) node.Node
 	configPath   string
 	config       config.Config
 	configMu     sync.Mutex
@@ -44,6 +45,12 @@ func WithAdminPath(path string) Option {
 func WithNodeRefresher(refresh func(context.Context) ([]node.Node, error)) Option {
 	return func(s *Server) {
 		s.refreshNodes = refresh
+	}
+}
+
+func WithNodeChecker(check func(context.Context, node.Node) node.Node) Option {
+	return func(s *Server) {
+		s.checkNode = check
 	}
 }
 
@@ -89,6 +96,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRefreshNodes(w, r)
 		return
 	}
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/nodes/") && strings.HasSuffix(r.URL.Path, "/probe") {
+		s.handleProbeNode(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/settings" {
+		s.handleSaveSettings(w, r)
+		return
+	}
 	if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/channels/") {
 		s.handleDeleteChannel(w, r)
 		return
@@ -106,7 +121,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"channel_count":    len(s.channelList()),
 			"node_count":       len(s.nodes.List()),
 			"connection_count": s.connectionCount(),
+			"settings":         s.safeSettings(),
 		})
+	case "/api/settings":
+		s.writeJSON(w, http.StatusOK, map[string]any{"settings": s.safeSettings()})
 	case "/api/channels":
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"channels": s.channelList(),
@@ -216,6 +234,60 @@ func (s *Server) handleRefreshNodes(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
+func (s *Server) handleProbeNode(w http.ResponseWriter, r *http.Request) {
+	if s.nodes == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node store is not configured"})
+		return
+	}
+	if s.checkNode == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node checker is not configured"})
+		return
+	}
+	nodeID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/nodes/"), "/probe")
+	nodeID = strings.Trim(nodeID, "/")
+	if nodeID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node id is required"})
+		return
+	}
+	var checked node.Node
+	ok := s.nodes.Update(nodeID, func(n node.Node) node.Node {
+		checked = s.checkNode(r.Context(), n)
+		return checked
+	})
+	if !ok {
+		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "node not found"})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"node": checked})
+}
+
+func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeRefreshInterval string `json:"node_refresh_interval"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	interval := strings.TrimSpace(body.NodeRefreshInterval)
+	if interval == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_refresh_interval is required"})
+		return
+	}
+	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
+		cfg.NodeRefreshInterval = interval
+		if _, err := config.ParseNodeRefreshInterval(interval); err != nil {
+			return cfg, err
+		}
+		return cfg, nil
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"config": cfg, "restart_required": true})
+}
+
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 	channelID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/channels/"), "/")
 	if channelID == "" {
@@ -308,6 +380,16 @@ func (s *Server) nodeList(region string) []node.Node {
 		}
 	}
 	return filtered
+}
+
+type settingsView struct {
+	NodeRefreshInterval string `json:"node_refresh_interval"`
+}
+
+func (s *Server) safeSettings() settingsView {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return settingsView{NodeRefreshInterval: s.config.NodeRefreshInterval}
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {

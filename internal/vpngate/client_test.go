@@ -33,6 +33,12 @@ func TestParseCSVDecodesOpenVPNConfigAndSortsNodes(t *testing.T) {
 	if nodes[0].OpenVPN == "" || !strings.Contains(nodes[0].OpenVPN, "remote fast.example") {
 		t.Fatalf("decoded openvpn config missing fast remote: %q", nodes[0].OpenVPN)
 	}
+	if nodes[0].Port != 1194 {
+		t.Fatalf("port = %d, want 1194", nodes[0].Port)
+	}
+	if nodes[0].Proto != "udp" {
+		t.Fatalf("proto = %q, want udp", nodes[0].Proto)
+	}
 	if !nodes[0].Available {
 		t.Fatalf("node should be available")
 	}
