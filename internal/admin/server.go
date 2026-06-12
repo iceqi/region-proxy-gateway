@@ -80,7 +80,11 @@ func NewServer(channels *channel.Manager, nodes *node.Store, connections *connec
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == s.adminPath || r.URL.Path == s.adminPath+"/" {
+	if r.URL.Path == s.adminPath {
+		http.Redirect(w, r, s.adminPath+"/", http.StatusMovedPermanently)
+		return
+	}
+	if r.URL.Path == s.adminPath+"/" {
 		if !s.authorized(r) {
 			s.writeUnauthorized(w)
 			return

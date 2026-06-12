@@ -169,7 +169,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))
 
-	req := httptest.NewRequest(http.MethodGet, "/secret-admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/secret-admin/", nil)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -179,6 +179,23 @@ func TestIndexReturnsHTML(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "text/html; charset=utf-8" {
 		t.Fatalf("content type = %q, want html", got)
+	}
+}
+
+func TestIndexRedirectsToTrailingSlash(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	server := NewServer(manager, nodes, nil, WithAdminPath("/secret-admin"))
+
+	req := httptest.NewRequest(http.MethodGet, "/secret-admin", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("status = %d, want 301", rec.Code)
+	}
+	if got := rec.Header().Get("Location"); got != "/secret-admin/" {
+		t.Fatalf("location = %q, want /secret-admin/", got)
 	}
 }
 

@@ -6,380 +6,451 @@ const indexHTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Region Proxy Gateway</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/index.css">
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.5.13/dist/vue.global.prod.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/element-plus@2.8.8/dist/index.full.min.js"></script>
   <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f5f7fa; color: #1f2933; }
-    header { padding: 16px 22px; background: #fff; border-bottom: 1px solid #dde3ea; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-    h1 { margin: 0; font-size: 21px; letter-spacing: 0; }
-    main { max-width: 1320px; margin: 0 auto; padding: 18px; }
-    section { margin-bottom: 20px; }
-    h2 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dde3ea; }
-    th, td { padding: 9px 10px; border-bottom: 1px solid #edf1f5; text-align: left; font-size: 13px; vertical-align: top; }
-    th { background: #eef3f8; color: #344054; white-space: nowrap; }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-    label { display: grid; gap: 5px; font-size: 13px; color: #344054; }
-    input, select { min-height: 33px; border: 1px solid #c9d3df; border-radius: 6px; padding: 6px 8px; font: inherit; background: #fff; min-width: 0; }
-    button { min-height: 33px; border: 1px solid #b8c4d1; border-radius: 6px; padding: 6px 10px; background: #fff; cursor: pointer; font: inherit; }
-    button.primary { background: #1769aa; color: #fff; border-color: #1769aa; }
-    button.danger { color: #b42318; border-color: #f1b8b2; }
-    button:disabled { opacity: .55; cursor: wait; }
-    .grid { display: grid; grid-template-columns: repeat(6, minmax(110px, 1fr)); gap: 11px; align-items: end; background: #fff; border: 1px solid #dde3ea; padding: 14px; }
-    .filters { display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); gap: 10px; align-items: end; background: #fff; border: 1px solid #dde3ea; padding: 12px; margin-bottom: 10px; }
-    .muted { color: #667085; }
-    .notice { padding: 10px 12px; background: #fff8db; border: 1px solid #ead88b; margin-bottom: 14px; font-size: 14px; display: none; }
-    .actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
-    .node-select { max-width: 220px; }
-    .badge { display: inline-flex; align-items: center; min-height: 22px; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d8e0e8; background: #f8fafc; white-space: nowrap; }
-    .good { background: #ecfdf3; color: #067647; border-color: #abefc6; }
-    .warn { background: #fffaeb; color: #b54708; border-color: #fedf89; }
-    .bad { background: #fef3f2; color: #b42318; border-color: #fecdca; }
-    .nowrap { white-space: nowrap; }
-    .host { max-width: 210px; overflow-wrap: anywhere; }
-    @media (max-width: 980px) {
-      header { align-items: flex-start; flex-direction: column; }
-      main { padding: 12px; }
-      .grid, .filters { grid-template-columns: 1fr 1fr; }
-      table { display: block; overflow-x: auto; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #1f2937; background: #f5f7fb; }
+    body { margin: 0; background: #f5f7fb; }
+    [v-cloak] { display: none; }
+    .topbar { height: 58px; padding: 0 22px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 10; }
+    .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+    .brand h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: 0; }
+    .brand span { color: #6b7280; font-size: 13px; }
+    .page { max-width: 1440px; margin: 0 auto; padding: 18px; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .toolbar-left, .toolbar-right { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .stat { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 13px 14px; }
+    .stat .label { color: #6b7280; font-size: 12px; margin-bottom: 6px; }
+    .stat .value { font-size: 22px; font-weight: 650; }
+    .panel { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+    .panel-head { padding: 13px 14px; display: flex; justify-content: space-between; align-items: center; gap: 10px; border-bottom: 1px solid #eef0f3; }
+    .panel-title { font-size: 15px; font-weight: 650; }
+    .panel-body { padding: 14px; }
+    .form-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; align-items: end; }
+    .filter-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; align-items: end; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+    .muted { color: #6b7280; }
+    .host-cell { display: grid; gap: 3px; overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .node-action { display: grid; grid-template-columns: minmax(130px, 1fr) auto auto; gap: 8px; align-items: center; min-width: 320px; }
+    .copy-lines { display: grid; gap: 4px; }
+    .el-tabs__header { margin-bottom: 14px; }
+    .el-table .cell { line-height: 1.45; }
+    @media (max-width: 1100px) {
+      .stats { grid-template-columns: 1fr 1fr; }
+      .form-grid, .filter-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 700px) {
+      .topbar { height: auto; padding: 12px; align-items: flex-start; flex-direction: column; }
+      .page { padding: 12px; }
+      .stats, .form-grid, .filter-grid { grid-template-columns: 1fr; }
+      .node-action { grid-template-columns: 1fr; min-width: 220px; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Region Proxy Gateway</h1>
-    <div class="actions">
-      <button onclick="load()">刷新页面</button>
-      <button class="primary" onclick="updateNodes()">更新节点</button>
-    </div>
-  </header>
-  <main>
-    <div id="notice" class="notice"></div>
-    <section>
-      <h2>设置</h2>
-      <form id="settings-form" class="grid">
-        <label>节点更新间隔<input id="node-refresh-interval" placeholder="20m"></label>
-        <button class="primary" type="submit">保存设置</button>
-        <span class="muted">保存后重启服务，定时更新间隔才会重新加载。</span>
-      </form>
-    </section>
-    <section>
-      <h2>新建或更新通道</h2>
-      <form id="channel-form" class="grid">
-        <label>ID<input id="channel-id" placeholder="jp-3000" required></label>
-        <label>监听地址<input id="listen-host" value="0.0.0.0" required></label>
-        <label>端口<input id="listen-port" type="number" min="1" max="65535" value="3000" required></label>
-        <label>地区<input id="region" placeholder="jp/us/kr" required></label>
-        <label>轮换分钟<input id="rotate-minutes" type="number" min="0" value="0"></label>
-        <label>模式
-          <select id="selection-mode">
-            <option value="auto">自动优选</option>
-            <option value="manual">手动节点</option>
-          </select>
-        </label>
-        <label>手动节点ID<input id="manual-node-id" placeholder="manual 模式填写"></label>
-        <label>启用
-          <select id="enabled">
-            <option value="true">启用</option>
-            <option value="false">停用</option>
-          </select>
-        </label>
-        <button class="primary" type="submit">保存通道</button>
-      </form>
-    </section>
-    <section>
-      <h2>通道</h2>
-      <table>
-        <thead><tr><th>ID</th><th>端口</th><th>地区</th><th>模式</th><th>当前节点</th><th>代理地址</th><th>操作</th></tr></thead>
-        <tbody id="channels"><tr><td colspan="7" class="muted">加载中</td></tr></tbody>
-      </table>
-    </section>
-    <section>
-      <h2>节点 <span id="node-count" class="muted"></span></h2>
-      <div class="filters">
-        <label>地区<select id="filter-region" onchange="renderNodes()"></select></label>
-        <label>IP 类型
-          <select id="filter-ip-type" onchange="renderNodes()">
-            <option value="">全部</option>
-            <option value="residential">住宅/家宽</option>
-            <option value="hosting">机房</option>
-            <option value="mobile">移动网</option>
-            <option value="proxy">代理</option>
-          </select>
-        </label>
-        <label>质量
-          <select id="filter-quality" onchange="renderNodes()">
-            <option value="">全部</option>
-            <option value="normal">普通</option>
-            <option value="datacenter">数据中心</option>
-            <option value="mobile">移动端</option>
-            <option value="proxy">代理风险</option>
-          </select>
-        </label>
-        <label>状态
-          <select id="filter-available" onchange="renderNodes()">
-            <option value="">全部</option>
-            <option value="true">可用</option>
-            <option value="false">不可用</option>
-          </select>
-        </label>
-        <label>最大延迟<input id="filter-max-latency" type="number" min="0" placeholder="ms" oninput="renderNodes()"></label>
-        <label>关键字<input id="filter-keyword" placeholder="IP/ASN/运营商" oninput="renderNodes()"></label>
-        <label>显示数量<input id="filter-limit" type="number" min="10" max="500" value="120" oninput="renderNodes()"></label>
+  <div id="app" v-cloak>
+    <div class="topbar">
+      <div class="brand">
+        <h1>Region Proxy Gateway</h1>
+        <span>{{ apiBase }}</span>
       </div>
-      <table>
-        <thead><tr><th>地区</th><th>主机 / IP</th><th>协议</th><th>延迟</th><th>住宅/机房</th><th>纯净度</th><th>ASN / 运营商</th><th>状态</th><th>操作</th></tr></thead>
-        <tbody id="nodes"><tr><td colspan="9" class="muted">加载中</td></tr></tbody>
-      </table>
-    </section>
-    <section>
-      <h2>在线连接</h2>
-      <table>
-        <thead><tr><th>ID</th><th>通道</th><th>协议</th><th>目标</th><th>客户端</th></tr></thead>
-        <tbody id="connections"><tr><td colspan="5" class="muted">加载中</td></tr></tbody>
-      </table>
-    </section>
-  </main>
+      <div class="actions">
+        <el-button :loading="loading" @click="load">刷新</el-button>
+        <el-button type="primary" :loading="updatingNodes" @click="updateNodes">更新节点</el-button>
+      </div>
+    </div>
+
+    <main class="page">
+      <div class="stats">
+        <div class="stat"><div class="label">通道</div><div class="value">{{ channels.length }}</div></div>
+        <div class="stat"><div class="label">节点</div><div class="value">{{ filteredNodes.length }} / {{ nodes.length }}</div></div>
+        <div class="stat"><div class="label">在线连接</div><div class="value">{{ connections.length }}</div></div>
+        <div class="stat"><div class="label">节点更新间隔</div><div class="value">{{ settings.node_refresh_interval || '-' }}</div></div>
+      </div>
+
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="节点" name="nodes">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">节点列表</div>
+              <div class="muted">可筛选、测速，并把指定通道切换到当前节点</div>
+            </div>
+            <div class="panel-body">
+              <div class="filter-grid">
+                <el-select v-model="filters.region" clearable placeholder="地区">
+                  <el-option v-for="item in regions" :key="item" :label="item" :value="item"></el-option>
+                </el-select>
+                <el-select v-model="filters.ipType" clearable placeholder="IP 类型">
+                  <el-option label="住宅/家宽" value="residential"></el-option>
+                  <el-option label="机房" value="hosting"></el-option>
+                  <el-option label="移动网" value="mobile"></el-option>
+                  <el-option label="代理" value="proxy"></el-option>
+                </el-select>
+                <el-select v-model="filters.quality" clearable placeholder="质量">
+                  <el-option label="普通" value="normal"></el-option>
+                  <el-option label="数据中心" value="datacenter"></el-option>
+                  <el-option label="移动端" value="mobile"></el-option>
+                  <el-option label="代理风险" value="proxy"></el-option>
+                </el-select>
+                <el-select v-model="filters.available" clearable placeholder="状态">
+                  <el-option label="可用" value="true"></el-option>
+                  <el-option label="不可用" value="false"></el-option>
+                </el-select>
+                <el-input-number v-model="filters.maxLatency" :min="0" :controls="false" placeholder="最大延迟"></el-input-number>
+                <el-input v-model="filters.keyword" clearable placeholder="IP/ASN/运营商"></el-input>
+                <el-input-number v-model="filters.limit" :min="10" :max="500" :step="10" placeholder="显示数量"></el-input-number>
+              </div>
+
+              <el-table :data="visibleNodes" stripe border height="640">
+                <el-table-column prop="region" label="地区" width="86">
+                  <template #default="{ row }">
+                    <div>{{ row.region }}</div>
+                    <div class="muted">{{ row.country || '' }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="主机 / IP" min-width="210">
+                  <template #default="{ row }">
+                    <div class="host-cell">
+                      <span class="mono">{{ row.hostname || '-' }}</span>
+                      <span class="mono">{{ row.ip || '-' }}</span>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="协议" width="96">
+                  <template #default="{ row }">{{ row.proto || 'udp' }}:{{ row.port || 1194 }}</template>
+                </el-table-column>
+                <el-table-column label="延迟" width="92">
+                  <template #default="{ row }">{{ row.latency_ms ? row.latency_ms + ' ms' : '-' }}</template>
+                </el-table-column>
+                <el-table-column label="类型" width="116">
+                  <template #default="{ row }">
+                    <el-tag :type="ipTypeTag(row.ip_type)" effect="light">{{ ipTypeText(row.ip_type) || '未知' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="纯净度" width="130">
+                  <template #default="{ row }">
+                    <el-tag :type="purityTag(row.purity_score)" effect="light">{{ row.purity_score || '未知' }}{{ row.purity_score ? '/100' : '' }} {{ qualityText(row.quality) }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="ASN / 运营商" min-width="190">
+                  <template #default="{ row }">
+                    <div>{{ row.owner || '-' }}</div>
+                    <div class="muted">{{ row.asn || row.as_name || '' }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" min-width="160">
+                  <template #default="{ row }">
+                    <el-tag :type="row.available ? 'success' : 'danger'" effect="light">{{ row.available ? '可用' : '不可用' }}</el-tag>
+                    <div class="muted">{{ row.probe_message || row.fail_reason || '' }}</div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="370" fixed="right">
+                  <template #default="{ row }">
+                    <div class="node-action">
+                      <el-select v-model="nodeChannel[row.id]" placeholder="选择通道">
+                        <el-option v-for="ch in channelsByRegion(row.region)" :key="ch.id" :label="ch.id + ' :' + ch.listen_port" :value="ch.id"></el-option>
+                      </el-select>
+                      <el-button :loading="probing[row.id]" @click="probeNode(row.id)">测速</el-button>
+                      <el-button type="primary" @click="switchChannelNode(nodeChannel[row.id], row.id)">切换</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="通道" name="channels">
+          <section class="panel">
+            <div class="panel-head">
+              <div class="panel-title">新建或更新通道</div>
+              <el-button @click="resetChannelForm">清空</el-button>
+            </div>
+            <div class="panel-body">
+              <div class="form-grid">
+                <el-input v-model="channelForm.id" placeholder="ID，如 jp-3000"></el-input>
+                <el-input v-model="channelForm.listen_host" placeholder="监听地址"></el-input>
+                <el-input-number v-model="channelForm.listen_port" :min="1" :max="65535" :controls="false" placeholder="端口"></el-input-number>
+                <el-input v-model="channelForm.region" placeholder="地区，如 jp/us"></el-input>
+                <el-input-number v-model="channelForm.rotate_minutes" :min="0" :controls="false" placeholder="轮换分钟"></el-input-number>
+                <el-select v-model="channelForm.selection_mode" placeholder="模式">
+                  <el-option label="自动优选" value="auto"></el-option>
+                  <el-option label="手动节点" value="manual"></el-option>
+                </el-select>
+                <el-input v-model="channelForm.manual_node_id" placeholder="手动节点 ID"></el-input>
+                <el-switch v-model="channelForm.enabled" active-text="启用"></el-switch>
+                <el-button type="primary" @click="saveChannel">保存通道</el-button>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">通道列表</div></div>
+            <div class="panel-body">
+              <el-table :data="channels" stripe border>
+                <el-table-column prop="id" label="ID" width="130"></el-table-column>
+                <el-table-column prop="listen_port" label="端口" width="88"></el-table-column>
+                <el-table-column prop="region" label="地区" width="86"></el-table-column>
+                <el-table-column label="模式" width="130">
+                  <template #default="{ row }">{{ row.selection_mode }} / {{ row.rotate_minutes }} 分钟</template>
+                </el-table-column>
+                <el-table-column prop="current_node_id" label="当前节点" min-width="180"></el-table-column>
+                <el-table-column label="代理地址" min-width="260">
+                  <template #default="{ row }">
+                    <div class="copy-lines">
+                      <span class="mono">{{ row.proxy_url_http }}</span>
+                      <span class="mono">{{ row.proxy_url_socks5 }}</span>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="320">
+                  <template #default="{ row }">
+                    <div class="actions">
+                      <el-button @click="editChannel(row)">编辑</el-button>
+                      <el-select v-model="channelNode[row.id]" placeholder="选择节点" style="width: 145px">
+                        <el-option v-for="n in nodesByRegion(row.region)" :key="n.id" :label="nodeLabel(n)" :value="n.id"></el-option>
+                      </el-select>
+                      <el-button type="primary" @click="switchChannelNode(row.id, channelNode[row.id])">切换</el-button>
+                      <el-button type="danger" @click="deleteChannel(row.id)">删除</el-button>
+                    </div>
+                  </template>
+                </el-table-column>
+              </el-table>
+            </div>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="在线连接" name="connections">
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">在线连接</div></div>
+            <div class="panel-body">
+              <el-table :data="connections" stripe border>
+                <el-table-column prop="id" label="ID" min-width="180"></el-table-column>
+                <el-table-column prop="channel_id" label="通道" width="130"></el-table-column>
+                <el-table-column prop="protocol" label="协议" width="90"></el-table-column>
+                <el-table-column prop="target" label="目标" min-width="220"></el-table-column>
+                <el-table-column prop="client_addr" label="客户端" min-width="170"></el-table-column>
+              </el-table>
+            </div>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="设置" name="settings">
+          <section class="panel">
+            <div class="panel-head"><div class="panel-title">基础设置</div></div>
+            <div class="panel-body">
+              <div class="form-grid">
+                <el-input v-model="settings.node_refresh_interval" placeholder="节点更新间隔，如 20m"></el-input>
+                <el-button type="primary" @click="saveSettings">保存设置</el-button>
+                <span class="muted">保存后重启服务，定时更新间隔才会重新加载。</span>
+              </div>
+            </div>
+          </section>
+        </el-tab-pane>
+      </el-tabs>
+    </main>
+  </div>
+
   <script>
-    let allNodes = [];
-    let currentChannels = [];
+    const { createApp } = Vue;
+    const apiBase = (() => {
+      const path = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
+      return path.replace(/\/$/, '') + '/api/';
+    })();
 
-    document.getElementById('settings-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      await request('api/settings', {
-        method: 'POST',
-        body: JSON.stringify({ node_refresh_interval: value('node-refresh-interval') })
-      });
-      showNotice('设置已保存，重启服务后定时更新间隔生效。');
-      await load();
-    });
-
-    document.getElementById('channel-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      const channel = {
-        id: value('channel-id'),
-        listen_host: value('listen-host'),
-        listen_port: numberValue('listen-port'),
-        region: value('region').toLowerCase(),
-        rotate_minutes: numberValue('rotate-minutes'),
-        selection_mode: value('selection-mode'),
-        manual_node_id: value('manual-node-id'),
-        enabled: value('enabled') === 'true'
-      };
-      if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
-      await request('api/channels', { method: 'POST', body: JSON.stringify(channel) });
-      showNotice('通道配置已保存，需要重启 region-proxy-gateway 后端口监听才会生效。');
-      await load();
-    });
-
-    async function load() {
-      const [statusRes, channelsRes, connectionsRes, nodesRes] = await Promise.all([
-        fetch('api/status'),
-        fetch('api/channels'),
-        fetch('api/connections'),
-        fetch('api/nodes')
-      ]);
-      const status = await statusRes.json();
-      currentChannels = (await channelsRes.json()).channels || [];
-      const connections = (await connectionsRes.json()).connections || [];
-      allNodes = (await nodesRes.json()).nodes || [];
-      if (status.settings) setValue('node-refresh-interval', status.settings.node_refresh_interval || '20m');
-      renderChannels(currentChannels);
-      renderRegionFilter();
-      renderNodes();
-      renderConnections(connections);
-    }
-
-    function renderChannels(channels) {
-      document.getElementById('channels').innerHTML = channels.length ? channels.map(ch =>
-        '<tr>' +
-          '<td><code>' + escapeHTML(ch.id) + '</code></td>' +
-          '<td>' + ch.listen_port + '</td>' +
-          '<td>' + escapeHTML(ch.region) + '</td>' +
-          '<td>' + escapeHTML(ch.selection_mode) + ' / ' + ch.rotate_minutes + '分钟</td>' +
-          '<td><code>' + escapeHTML(ch.current_node_id || '-') + '</code></td>' +
-          '<td><code>' + escapeHTML(ch.proxy_url_http) + '</code><br><code>' + escapeHTML(ch.proxy_url_socks5) + '</code></td>' +
-          '<td><div class="actions">' +
-            '<button onclick="fillForm(' + quote(ch.id) + ')">编辑</button>' +
-            '<select class="node-select" id="channel-node-' + escapeAttr(ch.id) + '">' + nodeOptions(ch.region) + '</select>' +
-            '<button onclick="switchChannelNode(' + quote(ch.id) + ', getSelectValue(' + quote('channel-node-' + ch.id) + '))">切换</button>' +
-            '<button class="danger" onclick="deleteChannel(' + quote(ch.id) + ')">删除</button>' +
-          '</div></td>' +
-        '</tr>').join('') : '<tr><td colspan="7" class="muted">没有通道</td></tr>';
-    }
-
-    function renderRegionFilter() {
-      const select = document.getElementById('filter-region');
-      const current = select.value;
-      const regions = Array.from(new Set(allNodes.map(n => n.region).filter(Boolean))).sort();
-      select.innerHTML = '<option value="">全部</option>' + regions.map(r => '<option value="' + escapeAttr(r) + '">' + escapeHTML(r) + '</option>').join('');
-      select.value = regions.includes(current) ? current : '';
-    }
-
-    function renderNodes() {
-      const region = value('filter-region');
-      const ipType = value('filter-ip-type');
-      const quality = value('filter-quality');
-      const available = value('filter-available');
-      const maxLatency = numberValue('filter-max-latency');
-      const keyword = value('filter-keyword').toLowerCase();
-      const limit = numberValue('filter-limit') || 120;
-      const filtered = allNodes.filter(n => {
-        if (region && n.region !== region) return false;
-        if (ipType && n.ip_type !== ipType) return false;
-        if (quality && n.quality !== quality) return false;
-        if (available && String(Boolean(n.available)) !== available) return false;
-        if (maxLatency && (Number(n.latency_ms || 0) === 0 || Number(n.latency_ms) > maxLatency)) return false;
-        if (keyword) {
-          const hay = [n.id, n.ip, n.hostname, n.owner, n.asn, n.as_name, n.location].join(' ').toLowerCase();
-          if (!hay.includes(keyword)) return false;
+    createApp({
+      data() {
+        return {
+          apiBase,
+          activeTab: 'nodes',
+          loading: false,
+          updatingNodes: false,
+          channels: [],
+          nodes: [],
+          connections: [],
+          settings: { node_refresh_interval: '20m' },
+          filters: { region: '', ipType: '', quality: '', available: '', maxLatency: null, keyword: '', limit: 120 },
+          channelForm: this.emptyChannelForm(),
+          channelNode: {},
+          nodeChannel: {},
+          probing: {}
+        };
+      },
+      computed: {
+        regions() {
+          return Array.from(new Set(this.nodes.map(n => n.region).filter(Boolean))).sort();
+        },
+        filteredNodes() {
+          const keyword = String(this.filters.keyword || '').toLowerCase();
+          return this.nodes.filter(n => {
+            if (this.filters.region && n.region !== this.filters.region) return false;
+            if (this.filters.ipType && n.ip_type !== this.filters.ipType) return false;
+            if (this.filters.quality && n.quality !== this.filters.quality) return false;
+            if (this.filters.available && String(Boolean(n.available)) !== this.filters.available) return false;
+            if (this.filters.maxLatency && (!Number(n.latency_ms) || Number(n.latency_ms) > Number(this.filters.maxLatency))) return false;
+            if (keyword) {
+              const hay = [n.id, n.ip, n.hostname, n.owner, n.asn, n.as_name, n.location].join(' ').toLowerCase();
+              if (!hay.includes(keyword)) return false;
+            }
+            return true;
+          });
+        },
+        visibleNodes() {
+          return this.filteredNodes.slice(0, Number(this.filters.limit || 120));
         }
-        return true;
-      });
-      document.getElementById('node-count').textContent = filtered.length + ' / ' + allNodes.length;
-      document.getElementById('nodes').innerHTML = filtered.length ? filtered.slice(0, limit).map(n =>
-        '<tr>' +
-          '<td class="nowrap">' + escapeHTML(n.region) + '<br><span class="muted">' + escapeHTML(n.country || '') + '</span></td>' +
-          '<td class="host"><code>' + escapeHTML(n.hostname || '-') + '</code><br><code>' + escapeHTML(n.ip || '-') + '</code></td>' +
-          '<td class="nowrap">' + escapeHTML((n.proto || 'udp') + ':' + (n.port || 1194)) + '</td>' +
-          '<td class="nowrap">' + (n.latency_ms ? n.latency_ms + ' ms' : '-') + '</td>' +
-          '<td>' + ipTypeBadge(n.ip_type) + '</td>' +
-          '<td>' + purityBadge(n) + '</td>' +
-          '<td class="host">' + escapeHTML(n.owner || '-') + '<br><span class="muted">' + escapeHTML(n.asn || n.as_name || '') + '</span></td>' +
-          '<td>' + statusBadge(n) + '<br><span class="muted">' + escapeHTML(n.probe_message || n.fail_reason || '') + '</span></td>' +
-          '<td><div class="actions">' +
-            '<button onclick="probeNode(' + quote(n.id) + ', this)">测速</button>' +
-            '<select id="node-channel-' + escapeAttr(n.id) + '">' + channelOptions(n.region) + '</select>' +
-            '<button class="primary" onclick="switchChannelNode(getSelectValue(' + quote('node-channel-' + n.id) + '), ' + quote(n.id) + ')">切换到此节点</button>' +
-          '</div></td>' +
-        '</tr>').join('') : '<tr><td colspan="9" class="muted">没有符合筛选条件的节点</td></tr>';
-    }
-
-    function renderConnections(connections) {
-      document.getElementById('connections').innerHTML = connections.length ? connections.map(conn =>
-        '<tr>' +
-          '<td><code>' + escapeHTML(conn.id) + '</code></td>' +
-          '<td><code>' + escapeHTML(conn.channel_id) + '</code></td>' +
-          '<td>' + escapeHTML(conn.protocol) + '</td>' +
-          '<td><code>' + escapeHTML(conn.target) + '</code></td>' +
-          '<td>' + escapeHTML(conn.client_addr) + '</td>' +
-        '</tr>').join('') : '<tr><td colspan="5" class="muted">没有在线连接</td></tr>';
-    }
-
-    function fillForm(channelID) {
-      const ch = currentChannels.find(item => item.id === channelID);
-      if (!ch) return;
-      setValue('channel-id', ch.id);
-      setValue('listen-host', ch.listen_host);
-      setValue('listen-port', ch.listen_port);
-      setValue('region', ch.region);
-      setValue('rotate-minutes', ch.rotate_minutes);
-      setValue('selection-mode', ch.selection_mode);
-      setValue('manual-node-id', ch.manual_node_id || ch.current_node_id || '');
-      setValue('enabled', String(ch.enabled));
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    async function switchChannelNode(channelID, nodeID) {
-      if (!channelID) return showNotice('请先选择通道');
-      if (!nodeID) return showNotice('请先选择节点');
-      await request('api/channels/' + encodeURIComponent(channelID) + '/switch', {
-        method: 'POST',
-        body: JSON.stringify({ node_id: nodeID })
-      });
-      showNotice('已切换节点。');
-      await load();
-    }
-
-    async function probeNode(nodeID, button) {
-      const oldText = button ? button.textContent : '';
-      if (button) { button.disabled = true; button.textContent = '测速中'; }
-      try {
-        await request('api/nodes/' + encodeURIComponent(nodeID) + '/probe', { method: 'POST' });
-        showNotice('测速完成。');
-        await load();
-      } finally {
-        if (button) { button.disabled = false; button.textContent = oldText; }
+      },
+      mounted() {
+        this.load();
+        setInterval(() => this.load(false), 7000);
+      },
+      methods: {
+        emptyChannelForm() {
+          return { id: '', listen_host: '0.0.0.0', listen_port: 3000, region: '', rotate_minutes: 0, selection_mode: 'auto', manual_node_id: '', enabled: true };
+        },
+        async load(showLoading = true) {
+          if (showLoading) this.loading = true;
+          try {
+            const [status, channels, connections, nodes] = await Promise.all([
+              this.request('status'),
+              this.request('channels'),
+              this.request('connections'),
+              this.request('nodes')
+            ]);
+            this.channels = channels.channels || [];
+            this.connections = connections.connections || [];
+            this.nodes = nodes.nodes || [];
+            if (status.settings) this.settings = Object.assign({}, this.settings, status.settings);
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          } finally {
+            this.loading = false;
+          }
+        },
+        async request(path, options = {}) {
+          const res = await fetch(apiBase + path.replace(/^\//, ''), Object.assign({
+            headers: { 'Content-Type': 'application/json' }
+          }, options));
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body.error || '请求失败');
+          return body;
+        },
+        async updateNodes() {
+          this.updatingNodes = true;
+          try {
+            await this.request('nodes/refresh', { method: 'POST' });
+            ElementPlus.ElMessage.success('节点已更新');
+            await this.load(false);
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          } finally {
+            this.updatingNodes = false;
+          }
+        },
+        async probeNode(nodeID) {
+          this.probing[nodeID] = true;
+          try {
+            await this.request('nodes/' + encodeURIComponent(nodeID) + '/probe', { method: 'POST' });
+            ElementPlus.ElMessage.success('测速完成');
+            await this.load(false);
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          } finally {
+            this.probing[nodeID] = false;
+          }
+        },
+        async switchChannelNode(channelID, nodeID) {
+          if (!channelID) return ElementPlus.ElMessage.warning('请先选择通道');
+          if (!nodeID) return ElementPlus.ElMessage.warning('请先选择节点');
+          try {
+            await this.request('channels/' + encodeURIComponent(channelID) + '/switch', {
+              method: 'POST',
+              body: JSON.stringify({ node_id: nodeID })
+            });
+            ElementPlus.ElMessage.success('已切换节点');
+            await this.load(false);
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          }
+        },
+        async saveChannel() {
+          const channel = Object.assign({}, this.channelForm, { region: String(this.channelForm.region || '').toLowerCase() });
+          if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
+          try {
+            await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
+            ElementPlus.ElMessage.success('通道已保存，新增端口需要重启服务生效');
+            await this.load(false);
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          }
+        },
+        editChannel(row) {
+          this.channelForm = {
+            id: row.id,
+            listen_host: row.listen_host,
+            listen_port: row.listen_port,
+            region: row.region,
+            rotate_minutes: row.rotate_minutes,
+            selection_mode: row.selection_mode,
+            manual_node_id: row.manual_node_id || row.current_node_id || '',
+            enabled: row.enabled
+          };
+          this.activeTab = 'channels';
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        },
+        resetChannelForm() {
+          this.channelForm = this.emptyChannelForm();
+        },
+        async deleteChannel(channelID) {
+          try {
+            await ElementPlus.ElMessageBox.confirm('删除通道 ' + channelID + '？保存后需要重启服务生效。', '确认删除', { type: 'warning' });
+            await this.request('channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
+            ElementPlus.ElMessage.success('通道已删除，需要重启服务生效');
+            await this.load(false);
+          } catch (err) {
+            if (err !== 'cancel') ElementPlus.ElMessage.error(err.message || String(err));
+          }
+        },
+        async saveSettings() {
+          try {
+            await this.request('settings', { method: 'POST', body: JSON.stringify(this.settings) });
+            ElementPlus.ElMessage.success('设置已保存，重启后生效');
+          } catch (err) {
+            ElementPlus.ElMessage.error(err.message);
+          }
+        },
+        nodesByRegion(region) {
+          return this.nodes.filter(n => n.region === region).slice(0, 150);
+        },
+        channelsByRegion(region) {
+          return this.channels.filter(ch => ch.region === region && ch.enabled);
+        },
+        nodeLabel(n) {
+          return [n.id, n.latency_ms ? n.latency_ms + 'ms' : '', this.ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');
+        },
+        ipTypeText(type) {
+          return ({ residential: '住宅/家宽', hosting: '机房', mobile: '移动网', proxy: '代理' })[type] || type || '';
+        },
+        qualityText(type) {
+          return ({ normal: '普通', datacenter: '数据中心', mobile: '移动端', proxy: '代理风险' })[type] || type || '';
+        },
+        ipTypeTag(type) {
+          if (type === 'residential') return 'success';
+          if (type === 'proxy') return 'danger';
+          if (type === 'hosting') return 'warning';
+          return 'info';
+        },
+        purityTag(score) {
+          score = Number(score || 0);
+          if (score >= 75) return 'success';
+          if (score >= 40) return 'warning';
+          if (score > 0) return 'danger';
+          return 'info';
+        }
       }
-    }
-
-    async function deleteChannel(channelID) {
-      if (!confirm('删除通道 ' + channelID + '？保存后需要重启服务生效。')) return;
-      await request('api/channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
-      showNotice('通道已删除，需要重启 region-proxy-gateway 后生效。');
-      await load();
-    }
-
-    async function updateNodes() {
-      showNotice('正在更新节点，会重新从 VPNGate 拉取并补充 IP 类型。');
-      await request('api/nodes/refresh', { method: 'POST' });
-      showNotice('节点已更新。');
-      await load();
-    }
-
-    async function request(url, options) {
-      const res = await fetch(url, Object.assign({ headers: { 'Content-Type': 'application/json' } }, options));
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || '请求失败');
-      return body;
-    }
-
-    function nodeOptions(region) {
-      const nodes = allNodes.filter(n => n.region === region);
-      if (!nodes.length) return '<option value="">没有节点</option>';
-      return '<option value="">选择节点</option>' + nodes.slice(0, 150).map(n =>
-        '<option value="' + escapeAttr(n.id) + '">' + escapeHTML(nodeLabel(n)) + '</option>').join('');
-    }
-
-    function channelOptions(region) {
-      const channels = currentChannels.filter(ch => ch.region === region && ch.enabled);
-      if (!channels.length) return '<option value="">没有同地区通道</option>';
-      return '<option value="">选择通道</option>' + channels.map(ch =>
-        '<option value="' + escapeAttr(ch.id) + '">' + escapeHTML(ch.id + ' :' + ch.listen_port) + '</option>').join('');
-    }
-
-    function nodeLabel(n) {
-      return [n.id, n.latency_ms ? n.latency_ms + 'ms' : '', ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');
-    }
-    function ipTypeBadge(type) {
-      const text = ipTypeText(type);
-      const cls = type === 'residential' ? 'good' : (type === 'hosting' || type === 'proxy' ? 'warn' : '');
-      return '<span class="badge ' + cls + '">' + escapeHTML(text || '未知') + '</span>';
-    }
-    function purityBadge(n) {
-      const score = Number(n.purity_score || 0);
-      const cls = score >= 75 ? 'good' : (score >= 40 ? 'warn' : 'bad');
-      return '<span class="badge ' + cls + '">' + (score ? score + '/100' : '未知') + ' ' + escapeHTML(qualityText(n.quality)) + '</span>';
-    }
-    function statusBadge(n) {
-      const ok = Boolean(n.available);
-      const status = n.probe_status || (ok ? 'available' : 'unavailable');
-      return '<span class="badge ' + (ok ? 'good' : 'bad') + '">' + escapeHTML(status === 'available' ? '可用' : '不可用') + '</span>';
-    }
-    function ipTypeText(type) {
-      return ({ residential: '住宅/家宽', hosting: '机房', mobile: '移动网', proxy: '代理' })[type] || type || '';
-    }
-    function qualityText(type) {
-      return ({ normal: '普通', datacenter: '数据中心', mobile: '移动端', proxy: '代理风险' })[type] || type || '';
-    }
-    function getSelectValue(id) {
-      const el = document.getElementById(id);
-      return el ? el.value : '';
-    }
-    function value(id) { const el = document.getElementById(id); return el ? el.value.trim() : ''; }
-    function numberValue(id) { return Number(value(id) || 0); }
-    function setValue(id, val) { const el = document.getElementById(id); if (el) el.value = val == null ? '' : val; }
-    function showNotice(text) {
-      const el = document.getElementById('notice');
-      el.textContent = text;
-      el.style.display = 'block';
-    }
-    function quote(value) { return JSON.stringify(String(value || '')); }
-    function escapeAttr(value) { return escapeHTML(value).replace(/"/g, '&quot;'); }
-    function escapeHTML(value) {
-      return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-    }
-    load().catch(err => showNotice(err.message));
-    setInterval(() => load().catch(() => {}), 7000);
+    }).use(ElementPlus).mount('#app');
   </script>
 </body>
 </html>`
