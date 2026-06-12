@@ -89,3 +89,26 @@ func TestCheckerAcceptsUDPNodesWhenPingWorks(t *testing.T) {
 		t.Fatalf("probe status = %q, want available", got.ProbeStatus)
 	}
 }
+
+func TestCheckerPrefersIPWhenHostnameIsNotResolvable(t *testing.T) {
+	checker := Checker{Timeout: time.Second}
+	var pingHost string
+	checker.Ping = func(ctx context.Context, host string, timeout time.Duration) (int, error) {
+		pingHost = host
+		return 31, nil
+	}
+
+	got := checker.Check(context.Background(), node.Node{
+		ID:       "vpngate",
+		Hostname: "vpn743566583",
+		IP:       "203.0.113.45",
+		Proto:    "udp",
+	})
+
+	if !got.Available {
+		t.Fatalf("expected node available, fail=%q", got.FailReason)
+	}
+	if pingHost != "203.0.113.45" {
+		t.Fatalf("ping host = %q, want IP fallback", pingHost)
+	}
+}

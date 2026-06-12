@@ -26,9 +26,9 @@ func (c Checker) Check(ctx context.Context, n node.Node) node.Node {
 	if c.Timeout == 0 {
 		c.Timeout = 3 * time.Second
 	}
-	host := n.Hostname
+	host := n.IP
 	if host == "" {
-		host = n.IP
+		host = n.Hostname
 	}
 	if host == "" {
 		n.Available = false
