@@ -103,7 +103,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	}
 
 	return services{
-		admin:      admin.NewServer(manager, nodes, tracker),
+		admin:      admin.NewServer(manager, nodes, tracker, admin.WithConfig(cfgPath, cfg)),
 		nodes:      nodes,
 		channels:   manager,
 		tracker:    tracker,

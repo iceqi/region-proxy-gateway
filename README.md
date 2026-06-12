@@ -106,8 +106,14 @@ http://127.0.0.1:<admin_port>
 - 当前节点。
 - HTTP/SOCKS5 地址。
 - 在线连接。
+- 新建、编辑、删除通道配置。
+- 选择节点并立即切换当前通道出口。
 
-后续会继续补上页面里的新增、编辑、删除、手动切换按钮。
+新增、编辑、删除通道会保存到 `data/config.json`。新增端口监听需要重启服务后生效：
+
+```bash
+systemctl restart region-proxy-gateway
+```
 
 ## 重要说明
 

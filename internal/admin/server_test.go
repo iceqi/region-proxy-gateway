@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
@@ -130,6 +131,70 @@ func TestSwitchChannelToNode(t *testing.T) {
 	}
 	if snapshot.CurrentNodeID != "jp-2" {
 		t.Fatalf("current node = %q, want jp-2", snapshot.CurrentNodeID)
+	}
+}
+
+func TestCreateChannelPersistsConfig(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:            "jp-3000",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    3000,
+		Region:        "jp",
+		SelectionMode: config.SelectionAuto,
+		Enabled:       true,
+	}}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/channels", bytes.NewBufferString(`{"id":"us-3001","listen_host":"0.0.0.0","listen_port":3001,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(loaded.Channels) != 2 {
+		t.Fatalf("channels = %d, want 2", len(loaded.Channels))
+	}
+	if loaded.Channels[1].ID != "us-3001" {
+		t.Fatalf("new channel id = %q, want us-3001", loaded.Channels[1].ID)
+	}
+}
+
+func TestDeleteChannelPersistsConfig(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{
+		{ID: "jp-3000", ListenHost: "127.0.0.1", ListenPort: 3000, Region: "jp", SelectionMode: config.SelectionAuto, Enabled: true},
+		{ID: "us-3001", ListenHost: "127.0.0.1", ListenPort: 3001, Region: "us", SelectionMode: config.SelectionAuto, Enabled: true},
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/channels/us-3001", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(loaded.Channels) != 1 || loaded.Channels[0].ID != "jp-3000" {
+		t.Fatalf("channels = %+v, want only jp-3000", loaded.Channels)
 	}
 }
 
