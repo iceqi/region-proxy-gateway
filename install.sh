@@ -9,8 +9,10 @@ BRANCH="${BRANCH:-main}"
 CONFIG_FILE="${INSTALL_DIR}/data/config.json"
 
 if [[ "${EUID}" -ne 0 ]]; then
-  echo "error: please run as root"
-  exit 1
+	if [[ "${RPG_INSTALL_TEST:-0}" != "1" ]]; then
+		echo "error: please run as root"
+		exit 1
+	fi
 fi
 
 log() {
@@ -40,7 +42,7 @@ random_string() {
 	local length="${1:-24}"
 	local value
 	set +o pipefail
-	value="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${length}")"
+	value="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${length}")"
 	set -o pipefail
 	echo "${value}"
 }
@@ -140,12 +142,24 @@ EOF
     return
   fi
 
-  log "keeping existing config and patching install defaults"
-  local tmp
-  tmp="$(mktemp)"
-  jq --arg data_dir "${INSTALL_DIR}/data" '
+	log "keeping existing config and patching install defaults"
+	local tmp new_admin_path new_admin_pass new_proxy_pass
+	tmp="$(mktemp)"
+	new_admin_path="/admin-$(random_string 20)"
+	new_admin_pass="$(random_string 24)"
+	new_proxy_pass="$(random_string 24)"
+	jq \
+		--arg data_dir "${INSTALL_DIR}/data" \
+		--arg admin_path "${new_admin_path}" \
+		--arg admin_pass "${new_admin_pass}" \
+		--arg proxy_pass "${new_proxy_pass}" '
     .admin_host = (.admin_host // "0.0.0.0") |
     .admin_host = (if .admin_host == "127.0.0.1" then "0.0.0.0" else .admin_host end) |
+    .admin_path = (if (.admin_path == null or .admin_path == "" or .admin_path == "null") then $admin_path else .admin_path end) |
+    .admin_username = (if (.admin_username == null or .admin_username == "") then "admin" else .admin_username end) |
+    .admin_password = (if (.admin_password == null or .admin_password == "" or .admin_password == "change-me-admin") then $admin_pass else .admin_password end) |
+    .proxy_username = (if (.proxy_username == null or .proxy_username == "") then "proxy" else .proxy_username end) |
+    .proxy_password = (if (.proxy_password == null or .proxy_password == "" or .proxy_password == "change-me-proxy") then $proxy_pass else .proxy_password end) |
     .data_dir = $data_dir |
     .openvpn_command = (.openvpn_command // "openvpn") |
     .tunnel_backend = "openvpn" |
@@ -219,9 +233,11 @@ print_summary() {
   echo "  systemctl restart ${SERVICE_NAME}"
 }
 
-install_packages
-clone_or_update
-build_binary
-write_or_patch_config
-install_service
-print_summary
+if [[ "${RPG_INSTALL_TEST:-0}" != "1" ]]; then
+	install_packages
+	clone_or_update
+	build_binary
+	write_or_patch_config
+	install_service
+	print_summary
+fi
