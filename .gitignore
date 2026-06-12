@@ -1,0 +1,7 @@
+/region-proxy-gateway
+/data/
+/dist/
+*.log
+*.pid
+*.tmp
+.DS_Store
