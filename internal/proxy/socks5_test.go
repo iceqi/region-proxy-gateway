@@ -121,6 +121,38 @@ func TestSOCKS5UnsupportedCommandIsRejected(t *testing.T) {
 	assertSOCKS5Response(t, client, []byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
+func TestSOCKS5RejectsNonZeroReservedByte(t *testing.T) {
+	server := newHTTPTestServer(&fakeSessionProvider{})
+	client, proxy := net.Pipe()
+	defer client.Close()
+
+	go server.handleSOCKS5(proxy)
+
+	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	req := []byte{0x05, 0x01, 0x01, 0x03, byte(len("example.com"))}
+	req = append(req, []byte("example.com")...)
+	req = append(req, 0x01, 0xbb)
+	if _, err := client.Write(req); err != nil {
+		t.Fatalf("write bad reserved byte request: %v", err)
+	}
+	assertSOCKS5Response(t, client, []byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+}
+
+func TestSOCKS5RejectsEmptyDomain(t *testing.T) {
+	server := newHTTPTestServer(&fakeSessionProvider{})
+	client, proxy := net.Pipe()
+	defer client.Close()
+
+	go server.handleSOCKS5(proxy)
+
+	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	req := []byte{0x05, 0x01, 0x00, 0x03, 0x00, 0x01, 0xbb}
+	if _, err := client.Write(req); err != nil {
+		t.Fatalf("write empty domain request: %v", err)
+	}
+	assertSOCKS5Response(t, client, []byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+}
+
 func TestSOCKS5RelaysBytesThroughTunnelDialer(t *testing.T) {
 	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
 	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})

@@ -122,7 +122,7 @@ func readSOCKS5Request(reader *bufio.Reader) (byte, string, bool) {
 	if _, err := io.ReadFull(reader, header); err != nil {
 		return 0, "", false
 	}
-	if header[0] != socks5Version {
+	if header[0] != socks5Version || header[2] != 0x00 {
 		return 0, "", false
 	}
 
@@ -147,7 +147,11 @@ func readSOCKS5Address(reader *bufio.Reader, addressType byte) (string, bool) {
 		}
 		return net.IP(raw).String(), true
 	case socks5AddrDomain:
-		return readSOCKS5LengthPrefixedString(reader)
+		host, ok := readSOCKS5LengthPrefixedString(reader)
+		if !ok || host == "" {
+			return "", false
+		}
+		return host, true
 	case socks5AddrIPv6:
 		raw := make([]byte, net.IPv6len)
 		if _, err := io.ReadFull(reader, raw); err != nil {
