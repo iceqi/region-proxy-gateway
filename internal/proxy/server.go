@@ -111,7 +111,3 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 	s.httpHandler(conn, first[0])
 }
-
-func (s *Server) handleSOCKS5(conn net.Conn) {
-	_ = conn.Close()
-}
