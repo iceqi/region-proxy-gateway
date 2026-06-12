@@ -11,7 +11,7 @@ type Record struct {
 	ID         string    `json:"id"`
 	ClientAddr string    `json:"client_addr"`
 	Protocol   string    `json:"protocol"`
-	Strategy   string    `json:"strategy"`
+	ChannelID  string    `json:"channel_id"`
 	Target     string    `json:"target"`
 	StartedAt  time.Time `json:"started_at"`
 	BytesUp    int64     `json:"bytes_up"`
@@ -30,7 +30,7 @@ func NewTracker() *Tracker {
 	}
 }
 
-func (t *Tracker) Start(clientAddr, protocol, strategyKey, target string) string {
+func (t *Tracker) Start(clientAddr, protocol, channelID, target string) string {
 	n := t.counter.Add(1)
 	id := fmt.Sprintf("conn-%d", n)
 
@@ -40,7 +40,7 @@ func (t *Tracker) Start(clientAddr, protocol, strategyKey, target string) string
 		ID:         id,
 		ClientAddr: clientAddr,
 		Protocol:   protocol,
-		Strategy:   strategyKey,
+		ChannelID:  channelID,
 		Target:     target,
 		StartedAt:  time.Now(),
 	}

@@ -1,25 +1,27 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 )
 
-func TestBuildServicesReportsDemoNodesAndProxyAddr(t *testing.T) {
+func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	cfg := config.Default()
-	cfg.ProxyHost = "127.0.0.1"
-	cfg.ProxyPort = 12345
-	services, err := buildServices(cfg)
+	cfg.DataDir = t.TempDir()
+	cfg.Channels[0].ListenHost = "127.0.0.1"
+	cfg.Channels[0].ListenPort = 12345
+
+	services, err := buildServices(context.Background(), cfg, "")
 	if err != nil {
 		t.Fatalf("buildServices returned error: %v", err)
 	}
+	defer services.channels.Stop(context.Background())
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -31,7 +33,7 @@ func TestBuildServicesReportsDemoNodesAndProxyAddr(t *testing.T) {
 
 	var body struct {
 		OK              bool `json:"ok"`
-		ActiveSessions  int  `json:"active_sessions"`
+		ChannelCount    int  `json:"channel_count"`
 		NodeCount       int  `json:"node_count"`
 		ConnectionCount int  `json:"connection_count"`
 	}
@@ -39,31 +41,25 @@ func TestBuildServicesReportsDemoNodesAndProxyAddr(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if !body.OK {
-		t.Fatalf("ok = false, want true")
+	if !body.OK || body.ChannelCount != 1 || body.NodeCount != 2 || body.ConnectionCount != 0 {
+		t.Fatalf("unexpected status body: %+v", body)
 	}
-	if body.ActiveSessions != 0 {
-		t.Fatalf("active_sessions = %d, want 0", body.ActiveSessions)
-	}
-	if body.NodeCount != 2 {
-		t.Fatalf("node_count = %d, want 2", body.NodeCount)
-	}
-	if body.ConnectionCount != 0 {
-		t.Fatalf("connection_count = %d, want 0", body.ConnectionCount)
-	}
-	wantProxyAddr := fmt.Sprintf("%s:%d", cfg.ProxyHost, cfg.ProxyPort)
-	if services.proxy.ListenAddr != wantProxyAddr {
-		t.Fatalf("proxy ListenAddr = %q, want %q", services.proxy.ListenAddr, wantProxyAddr)
+	wantProxyAddr := fmt.Sprintf("%s:%d", cfg.Channels[0].ListenHost, cfg.Channels[0].ListenPort)
+	if len(services.proxies) != 1 || services.proxies[0].ListenAddr != wantProxyAddr {
+		t.Fatalf("proxies = %+v, want one proxy at %s", services.proxies, wantProxyAddr)
 	}
 }
 
 func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
-	services, err := buildServices(config.Default())
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	services, err := buildServices(context.Background(), cfg, "")
 	if err != nil {
 		t.Fatalf("buildServices returned error: %v", err)
 	}
+	defer services.channels.Stop(context.Background())
 
-	services.tracker.Start("127.0.0.1:50000", "http", "jp:10", "example.com:443")
+	services.tracker.Start("127.0.0.1:50000", "http", "jp-3000", "example.com:443")
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -82,36 +78,5 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 
 	if body.ConnectionCount != 1 {
 		t.Fatalf("connection_count = %d, want 1", body.ConnectionCount)
-	}
-}
-
-func TestBuildServicesLoadsOpenVPNNodesFromDataDir(t *testing.T) {
-	dir := t.TempDir()
-	raw := `[{"id":"jp-real","region":"jp","openvpn":"client\nremote vpn-jp.example.net 1194 udp\n"}]`
-	if err := os.WriteFile(filepath.Join(dir, "nodes.json"), []byte(raw), 0600); err != nil {
-		t.Fatalf("write nodes file: %v", err)
-	}
-
-	cfg := config.Default()
-	cfg.TunnelBackend = config.TunnelBackendOpenVPN
-	cfg.DataDir = dir
-
-	services, err := buildServices(cfg)
-	if err != nil {
-		t.Fatalf("buildServices returned error: %v", err)
-	}
-	nodes := services.nodes.List()
-	if len(nodes) != 1 || nodes[0].ID != "jp-real" {
-		t.Fatalf("nodes = %+v, want jp-real from data dir", nodes)
-	}
-}
-
-func TestBuildServicesOpenVPNRequiresNodeFile(t *testing.T) {
-	cfg := config.Default()
-	cfg.TunnelBackend = config.TunnelBackendOpenVPN
-	cfg.DataDir = t.TempDir()
-
-	if _, err := buildServices(cfg); err == nil {
-		t.Fatalf("expected missing nodes file error")
 	}
 }

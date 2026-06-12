@@ -1,118 +1,118 @@
 # Region Proxy Gateway
 
-Region Proxy Gateway is a Go single-port region proxy gateway. It accepts
-HTTP proxy, HTTP CONNECT, and SOCKS5 traffic on one proxy port and selects a
-region strategy from the proxy username.
+个人用的多端口地域代理网关。
 
-## Username Strategy
-
-The proxy username format is:
+它的核心模型很简单：
 
 ```text
-<region>-<minutes>
+3000 -> 日本 -> 自动优选 -> 10 分钟换一次
+3001 -> 美国 -> 自动优选 -> 固定不换
+3002 -> 韩国 -> 手动指定节点
 ```
 
-Examples:
+3x-ui 里可以直接把不同端口配置成不同上游代理。
+
+## 当前能力
+
+- HTTP 代理。
+- HTTP CONNECT。
+- SOCKS5 用户名密码代理。
+- 多个代理端口通道。
+- 每个通道独立配置地区、端口、固定/轮换模式。
+- VPNGate CSV 节点解析。
+- 管理面板查看通道、节点、在线连接。
+- Fake backend 本地测试。
+- OpenVPN backend 进程生命周期。
+
+## 节点来源
+
+节点来自 VPNGate 官方 CSV：
 
 ```text
-jp-10
-us-0
+https://www.vpngate.net/api/iphone/
 ```
 
-`minutes=0` means fixed current node. `minutes>0` means rotate within the same region.
+程序会解析 CSV 里的 `OpenVPN_ConfigData_Base64`，不需要你手工维护 `nodes.json`。
 
-## Current Status
+## 配置文件
 
-Implemented:
-
-- HTTP proxy and HTTP CONNECT.
-- SOCKS5 username/password proxy.
-- Strategy parsing from usernames such as `jp-10`.
-- Shared sessions for the same strategy.
-- Connection tracking.
-- Admin JSON API.
-- Fake tunnel backend.
-- OpenVPN process lifecycle backend.
-
-Important limitation:
-
-The OpenVPN backend can start and switch OpenVPN processes, but per-session
-route isolation is not implemented yet. Until a later Linux network namespace
-or policy routing phase is complete, do not treat proxy traffic as if it is
-already guaranteed to use a regional OpenVPN exit. OpenVPN `DialContext`
-returns a routing-isolation error in this phase.
-
-## Proxy Examples
+首次启动会生成：
 
 ```text
-http://jp-10:PASSWORD@SERVER_IP:3000
-socks5://jp-10:PASSWORD@SERVER_IP:3000
-http://us-0:PASSWORD@SERVER_IP:3000
-socks5://us-0:PASSWORD@SERVER_IP:3000
+data/config.json
 ```
 
-## Tunnel Backends
-
-The default tunnel backend is:
-
-```text
-fake
-```
-
-The fake backend keeps the gateway runnable without root privileges, OpenVPN,
-or a tun device.
-
-The current binary starts from built-in defaults and does not yet load a config
-file or environment variables. The OpenVPN backend is available in code through
-`config.Config`; runtime config loading is a follow-up task.
-
-When runtime config loading is added, the intended shape is:
+示例：
 
 ```json
 {
-  "tunnel_backend": "openvpn",
+  "admin_host": "127.0.0.1",
+  "admin_port": 8787,
+  "admin_username": "admin",
+  "admin_password": "change-me-admin",
+  "proxy_username": "proxy",
+  "proxy_password": "change-me-proxy",
+  "node_refresh_interval": "20m",
   "data_dir": "./data",
-  "openvpn_command": "openvpn"
+  "openvpn_command": "openvpn",
+  "tunnel_backend": "fake",
+  "channels": [
+    {
+      "id": "jp-3000",
+      "listen_host": "0.0.0.0",
+      "listen_port": 3000,
+      "region": "jp",
+      "rotate_minutes": 10,
+      "selection_mode": "auto",
+      "enabled": true
+    }
+  ]
 }
 ```
 
-OpenVPN nodes are loaded from:
+`selection_mode`：
+
+- `auto`：自动从地区里选一个节点。
+- `manual`：使用 `manual_node_id` 指定节点。
+
+`rotate_minutes`：
+
+- `0`：固定当前节点。
+- 大于 `0`：后续用于自动轮换同地区节点。
+
+## 代理地址
+
+假设服务器 IP 是 `1.2.3.4`：
 
 ```text
-data/nodes.json
+http://proxy:change-me-proxy@1.2.3.4:3000
+socks5://proxy:change-me-proxy@1.2.3.4:3000
 ```
 
-Example `data/nodes.json`:
+地区由端口决定，不再需要用户名写 `jp-10`。
 
-```json
-[
-  {
-    "id": "jp-example-1",
-    "region": "jp",
-    "country": "Japan",
-    "ip": "203.0.113.10",
-    "hostname": "vpn-jp.example.net",
-    "openvpn": "client\nremote vpn-jp.example.net 1194 udp\nroute-nopull\n"
-  }
-]
-```
+## 管理面板
 
-## Admin API
-
-The default admin address is:
+默认地址：
 
 ```text
 http://127.0.0.1:8787
 ```
 
-Endpoints:
+当前面板支持查看：
 
-```text
-GET /api/status
-GET /api/sessions
-GET /api/nodes
-GET /api/connections
-```
+- 通道列表。
+- 当前节点。
+- HTTP/SOCKS5 地址。
+- 在线连接。
+
+后续会继续补上页面里的新增、编辑、删除、手动切换按钮。
+
+## 重要说明
+
+`fake` backend 可以直接跑通本地测试。
+
+`openvpn` backend 可以启动 OpenVPN 进程，但每个代理端口的流量要稳定走各自 VPN 出口，还需要 Linux 上的设备绑定拨号或策略路由接入。这个项目已经把多通道结构收窄好了，下一步就是补这块真实出站路由。
 
 ## Build
 

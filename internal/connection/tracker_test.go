@@ -8,7 +8,7 @@ import (
 func TestStartIncrementsActiveCountAndReturnsRecord(t *testing.T) {
 	tracker := NewTracker()
 
-	id := tracker.Start("127.0.0.1:54321", "http", "jp-15", "example.com:443")
+	id := tracker.Start("127.0.0.1:54321", "http", "jp-3000", "example.com:443")
 
 	if id != "conn-1" {
 		t.Fatalf("id = %q, want conn-1", id)
@@ -30,8 +30,8 @@ func TestStartIncrementsActiveCountAndReturnsRecord(t *testing.T) {
 	if record.Protocol != "http" {
 		t.Fatalf("protocol = %q, want http", record.Protocol)
 	}
-	if record.Strategy != "jp-15" {
-		t.Fatalf("strategy = %q, want jp-15", record.Strategy)
+	if record.ChannelID != "jp-3000" {
+		t.Fatalf("channel id = %q, want jp-3000", record.ChannelID)
 	}
 	if record.Target != "example.com:443" {
 		t.Fatalf("target = %q, want example.com:443", record.Target)

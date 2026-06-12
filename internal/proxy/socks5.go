@@ -8,8 +8,6 @@ import (
 	"io"
 	"net"
 	"time"
-
-	"github.com/iceqi/region-proxy-gateway/internal/strategy"
 )
 
 const (
@@ -38,8 +36,7 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
-	strat, ok := s.negotiateSOCKS5Auth(conn, reader)
-	if !ok {
+	if !s.negotiateSOCKS5Auth(conn, reader) {
 		return
 	}
 
@@ -54,7 +51,7 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
-	upstream, ok := s.dialSOCKS5Upstream(conn, context.Background(), strat, target)
+	upstream, ok := s.dialSOCKS5Upstream(conn, context.Background(), target)
 	if !ok {
 		return
 	}
@@ -64,43 +61,42 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 		return
 	}
 
-	s.trackAndRelaySOCKS5(conn, upstream, reader, strat.Key(), target)
+	s.trackAndRelaySOCKS5(conn, upstream, reader, s.ChannelID, target)
 }
 
-func (s *Server) negotiateSOCKS5Auth(conn net.Conn, reader *bufio.Reader) (strategy.Strategy, bool) {
+func (s *Server) negotiateSOCKS5Auth(conn net.Conn, reader *bufio.Reader) bool {
 	methodCount, err := reader.ReadByte()
 	if err != nil {
-		return strategy.Strategy{}, false
+		return false
 	}
 
 	methods := make([]byte, int(methodCount))
 	if _, err := io.ReadFull(reader, methods); err != nil {
-		return strategy.Strategy{}, false
+		return false
 	}
 
 	if !bytesContain(methods, socks5AuthUsernamePassword) {
 		_, _ = conn.Write([]byte{socks5Version, socks5NoAcceptableMethods})
-		return strategy.Strategy{}, false
+		return false
 	}
 	if _, err := conn.Write([]byte{socks5Version, socks5AuthUsernamePassword}); err != nil {
-		return strategy.Strategy{}, false
+		return false
 	}
 
 	username, password, ok := readSOCKS5UsernamePassword(reader)
 	if !ok {
 		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
-		return strategy.Strategy{}, false
+		return false
 	}
 
-	strat, err := s.authenticate(username, password)
-	if err != nil {
+	if err := s.authenticate(username, password); err != nil {
 		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
-		return strategy.Strategy{}, false
+		return false
 	}
 	if _, err := conn.Write([]byte{socks5AuthVersion, socks5AuthSuccess}); err != nil {
-		return strategy.Strategy{}, false
+		return false
 	}
-	return strat, true
+	return true
 }
 
 func readSOCKS5UsernamePassword(reader *bufio.Reader) (string, string, bool) {
@@ -177,21 +173,12 @@ func readSOCKS5LengthPrefixedString(reader *bufio.Reader) (string, bool) {
 	return string(value), true
 }
 
-func (s *Server) dialSOCKS5Upstream(client net.Conn, ctx context.Context, strat strategy.Strategy, target string) (net.Conn, bool) {
-	if s.sessions == nil {
+func (s *Server) dialSOCKS5Upstream(client net.Conn, ctx context.Context, target string) (net.Conn, bool) {
+	if s.dialer == nil {
 		_, _ = client.Write(socks5GeneralFailureResponse)
 		return nil, false
 	}
-	sess, err := s.sessions.GetOrCreate(ctx, strat)
-	if err != nil {
-		_, _ = client.Write(socks5GeneralFailureResponse)
-		return nil, false
-	}
-	if sess.Tunnel == nil {
-		_, _ = client.Write(socks5GeneralFailureResponse)
-		return nil, false
-	}
-	upstream, err := sess.Tunnel.DialContext(ctx, "tcp", target)
+	upstream, err := s.dialer.DialContext(ctx, s.ChannelID, "tcp", target)
 	if err != nil {
 		_, _ = client.Write(socks5GeneralFailureResponse)
 		return nil, false
@@ -199,7 +186,7 @@ func (s *Server) dialSOCKS5Upstream(client net.Conn, ctx context.Context, strat 
 	return upstream, true
 }
 
-func (s *Server) trackAndRelaySOCKS5(client net.Conn, upstream net.Conn, buffered *bufio.Reader, strategyKey string, target string) {
+func (s *Server) trackAndRelaySOCKS5(client net.Conn, upstream net.Conn, buffered *bufio.Reader, channelID string, target string) {
 	clientAddr := ""
 	if client.RemoteAddr() != nil {
 		clientAddr = client.RemoteAddr().String()
@@ -207,7 +194,7 @@ func (s *Server) trackAndRelaySOCKS5(client net.Conn, upstream net.Conn, buffere
 
 	var id string
 	if s.connections != nil {
-		id = s.connections.Start(clientAddr, "socks5", strategyKey, target)
+		id = s.connections.Start(clientAddr, "socks5", channelID, target)
 	}
 	up, down := relay(client, upstream, buffered)
 	if s.connections != nil {

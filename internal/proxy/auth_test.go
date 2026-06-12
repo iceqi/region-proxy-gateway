@@ -3,13 +3,13 @@ package proxy
 import "testing"
 
 func TestParseBasicProxyAuthorization(t *testing.T) {
-	credentials, ok := ParseBasicProxyAuthorization("Basic anAtMTA6c2VjcmV0")
+	credentials, ok := ParseBasicProxyAuthorization("Basic cHJveHk6c2VjcmV0")
 	if !ok {
 		t.Fatal("expected header to parse")
 	}
 
-	if credentials.Username != "jp-10" {
-		t.Fatalf("username = %q, want %q", credentials.Username, "jp-10")
+	if credentials.Username != "proxy" {
+		t.Fatalf("username = %q, want %q", credentials.Username, "proxy")
 	}
 	if credentials.Password != "secret" {
 		t.Fatalf("password = %q, want %q", credentials.Password, "secret")
@@ -24,13 +24,13 @@ func TestParseBasicProxyAuthorizationRejectsNonBasicScheme(t *testing.T) {
 }
 
 func TestParseBasicProxyAuthorizationAcceptsCaseInsensitiveBasicScheme(t *testing.T) {
-	credentials, ok := ParseBasicProxyAuthorization("basic anAtMTA6c2VjcmV0")
+	credentials, ok := ParseBasicProxyAuthorization("basic cHJveHk6c2VjcmV0")
 	if !ok {
 		t.Fatal("expected lowercase basic scheme to parse")
 	}
 
-	if credentials.Username != "jp-10" {
-		t.Fatalf("username = %q, want %q", credentials.Username, "jp-10")
+	if credentials.Username != "proxy" {
+		t.Fatalf("username = %q, want %q", credentials.Username, "proxy")
 	}
 	if credentials.Password != "secret" {
 		t.Fatalf("password = %q, want %q", credentials.Password, "secret")

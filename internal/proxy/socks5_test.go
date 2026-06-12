@@ -6,12 +6,10 @@ import (
 	"net"
 	"testing"
 	"time"
-
-	"github.com/iceqi/region-proxy-gateway/internal/session"
 )
 
 func TestSOCKS5WithoutUsernamePasswordMethodIsRejected(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
@@ -22,33 +20,32 @@ func TestSOCKS5WithoutUsernamePasswordMethodIsRejected(t *testing.T) {
 }
 
 func TestSOCKS5ValidAuthAndDomainConnectSucceeds(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	provider := &fakeSessionProvider{sess: session.Session{Tunnel: tun}}
-	server := newHTTPTestServer(provider)
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 	writeSOCKS5ConnectDomain(t, client, 0x01, "example.com", 443)
 	assertSOCKS5Response(t, client, []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	upstreamPeer.Close()
 
-	if provider.calls != 1 {
-		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	if dialer.calls != 1 {
+		t.Fatalf("dialer calls = %d, want 1", dialer.calls)
 	}
-	if provider.gotStrategy.Key() != "jp-10" {
-		t.Fatalf("strategy = %q, want jp-10", provider.gotStrategy.Key())
+	if dialer.gotChannelID != "jp-3000" {
+		t.Fatalf("channel id = %q, want jp-3000", dialer.gotChannelID)
 	}
-	if tun.gotNetwork != "tcp" {
-		t.Fatalf("dial network = %q, want tcp", tun.gotNetwork)
+	if dialer.gotNetwork != "tcp" {
+		t.Fatalf("dial network = %q, want tcp", dialer.gotNetwork)
 	}
-	if tun.gotAddress != "example.com:443" {
-		t.Fatalf("dial address = %q, want example.com:443", tun.gotAddress)
+	if dialer.gotAddress != "example.com:443" {
+		t.Fatalf("dial address = %q, want example.com:443", dialer.gotAddress)
 	}
 }
 
@@ -76,59 +73,58 @@ func TestSOCKS5ConnectSupportsIPv4AndIPv6(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-			provider := &fakeSessionProvider{sess: session.Session{Tunnel: tun}}
-			server := newHTTPTestServer(provider)
+			dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+			server := newHTTPTestServer(dialer)
 			client, proxy := net.Pipe()
 			defer client.Close()
 			upstream, upstreamPeer := net.Pipe()
 			defer upstreamPeer.Close()
-			tun.dialResult <- fakeDial{conn: upstream}
+			dialer.dialResult <- fakeDial{conn: upstream}
 
 			go server.handleSOCKS5(proxy)
 
-			negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+			negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 			tt.writeTarget(t, client)
 			assertSOCKS5Response(t, client, []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			upstreamPeer.Close()
 
-			if tun.gotAddress != tt.wantAddress {
-				t.Fatalf("dial address = %q, want %q", tun.gotAddress, tt.wantAddress)
+			if dialer.gotAddress != tt.wantAddress {
+				t.Fatalf("dial address = %q, want %q", dialer.gotAddress, tt.wantAddress)
 			}
 		})
 	}
 }
 
 func TestSOCKS5InvalidPasswordIsRejected(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "wrong", false)
+	negotiateSOCKS5Auth(t, client, "proxy", "wrong", false)
 }
 
 func TestSOCKS5UnsupportedCommandIsRejected(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 	writeSOCKS5ConnectDomain(t, client, 0x02, "example.com", 443)
 	assertSOCKS5Response(t, client, []byte{0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 }
 
 func TestSOCKS5RejectsNonZeroReservedByte(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 	req := []byte{0x05, 0x01, 0x01, 0x03, byte(len("example.com"))}
 	req = append(req, []byte("example.com")...)
 	req = append(req, 0x01, 0xbb)
@@ -139,13 +135,13 @@ func TestSOCKS5RejectsNonZeroReservedByte(t *testing.T) {
 }
 
 func TestSOCKS5RejectsEmptyDomain(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 	req := []byte{0x05, 0x01, 0x00, 0x03, 0x00, 0x01, 0xbb}
 	if _, err := client.Write(req); err != nil {
 		t.Fatalf("write empty domain request: %v", err)
@@ -154,17 +150,17 @@ func TestSOCKS5RejectsEmptyDomain(t *testing.T) {
 }
 
 func TestSOCKS5RelaysBytesThroughTunnelDialer(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleSOCKS5(proxy)
 
-	negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+	negotiateSOCKS5Auth(t, client, "proxy", "secret", true)
 	writeSOCKS5ConnectDomain(t, client, 0x01, "example.com", 443)
 	assertSOCKS5Response(t, client, []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 

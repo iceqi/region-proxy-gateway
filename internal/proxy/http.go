@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/iceqi/region-proxy-gateway/internal/strategy"
 )
 
 const proxyAuthRealm = `Basic realm="region-proxy-gateway"`
@@ -27,40 +25,38 @@ func (s *Server) handleHTTP(conn net.Conn, firstByte byte) {
 		return
 	}
 
-	strat, ok := s.authenticateHTTPRequest(req)
-	if !ok {
+	if !s.authenticateHTTPRequest(req) {
 		writeProxyAuthRequired(conn)
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
 	if req.Method == http.MethodConnect {
-		s.handleHTTPConnect(conn, reader, req, strat)
+		s.handleHTTPConnect(conn, reader, req)
 		return
 	}
-	s.handlePlainHTTP(conn, req, strat)
+	s.handlePlainHTTP(conn, req)
 }
 
-func (s *Server) authenticateHTTPRequest(req *http.Request) (strategy.Strategy, bool) {
+func (s *Server) authenticateHTTPRequest(req *http.Request) bool {
 	credentials, ok := ParseBasicProxyAuthorization(req.Header.Get("Proxy-Authorization"))
 	if !ok {
-		return strategy.Strategy{}, false
+		return false
 	}
-	strat, err := s.authenticate(credentials.Username, credentials.Password)
-	if err != nil {
-		return strategy.Strategy{}, false
+	if err := s.authenticate(credentials.Username, credentials.Password); err != nil {
+		return false
 	}
-	return strat, true
+	return true
 }
 
-func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *http.Request, strat strategy.Strategy) {
+func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *http.Request) {
 	target := req.Host
 	if target == "" {
 		writeHTTPError(client, http.StatusBadRequest)
 		return
 	}
 
-	upstream, ok := s.dialHTTPUpstream(client, req.Context(), strat, target)
+	upstream, ok := s.dialHTTPUpstream(client, req.Context(), target)
 	if !ok {
 		return
 	}
@@ -70,17 +66,17 @@ func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *h
 		return
 	}
 
-	s.trackAndRelay(client, upstream, reader, strat.Key(), target)
+	s.trackAndRelay(client, upstream, reader, s.ChannelID, target)
 }
 
-func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request, strat strategy.Strategy) {
+func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request) {
 	target, err := proxyRequestTarget(req)
 	if err != nil {
 		writeHTTPError(client, http.StatusBadRequest)
 		return
 	}
 
-	upstream, ok := s.dialHTTPUpstream(client, req.Context(), strat, target)
+	upstream, ok := s.dialHTTPUpstream(client, req.Context(), target)
 	if !ok {
 		return
 	}
@@ -92,24 +88,15 @@ func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request, strat strat
 	req.URL.Scheme = ""
 	req.URL.Host = ""
 
-	s.trackPlainHTTP(client, upstream, req, strat.Key(), target)
+	s.trackPlainHTTP(client, upstream, req, s.ChannelID, target)
 }
 
-func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, strat strategy.Strategy, target string) (net.Conn, bool) {
-	if s.sessions == nil {
+func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, target string) (net.Conn, bool) {
+	if s.dialer == nil {
 		writeHTTPError(client, http.StatusBadGateway)
 		return nil, false
 	}
-	sess, err := s.sessions.GetOrCreate(ctx, strat)
-	if err != nil {
-		writeHTTPError(client, http.StatusBadGateway)
-		return nil, false
-	}
-	if sess.Tunnel == nil {
-		writeHTTPError(client, http.StatusBadGateway)
-		return nil, false
-	}
-	upstream, err := sess.Tunnel.DialContext(ctx, "tcp", target)
+	upstream, err := s.dialer.DialContext(ctx, s.ChannelID, "tcp", target)
 	if err != nil {
 		writeHTTPError(client, http.StatusBadGateway)
 		return nil, false
@@ -117,7 +104,7 @@ func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, strat st
 	return upstream, true
 }
 
-func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *bufio.Reader, strategyKey string, target string) {
+func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *bufio.Reader, channelID string, target string) {
 	clientAddr := ""
 	if client.RemoteAddr() != nil {
 		clientAddr = client.RemoteAddr().String()
@@ -125,7 +112,7 @@ func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *buf
 
 	var id string
 	if s.connections != nil {
-		id = s.connections.Start(clientAddr, "http", strategyKey, target)
+		id = s.connections.Start(clientAddr, "http", channelID, target)
 	}
 	up, down := relay(client, upstream, buffered)
 	if s.connections != nil {
@@ -134,7 +121,7 @@ func (s *Server) trackAndRelay(client net.Conn, upstream net.Conn, buffered *buf
 	}
 }
 
-func (s *Server) trackPlainHTTP(client net.Conn, upstream net.Conn, req *http.Request, strategyKey string, target string) {
+func (s *Server) trackPlainHTTP(client net.Conn, upstream net.Conn, req *http.Request, channelID string, target string) {
 	clientAddr := ""
 	if client.RemoteAddr() != nil {
 		clientAddr = client.RemoteAddr().String()
@@ -142,7 +129,7 @@ func (s *Server) trackPlainHTTP(client net.Conn, upstream net.Conn, req *http.Re
 
 	var id string
 	if s.connections != nil {
-		id = s.connections.Start(clientAddr, "http", strategyKey, target)
+		id = s.connections.Start(clientAddr, "http", channelID, target)
 		defer s.connections.Finish(id)
 	}
 

@@ -10,6 +10,7 @@ type Node struct {
 	Hostname     string    `json:"hostname"`
 	OpenVPN      string    `json:"openvpn"`
 	LatencyMS    int       `json:"latency_ms"`
+	Speed        int64     `json:"speed"`
 	Available    bool      `json:"available"`
 	LastTestedAt time.Time `json:"last_tested_at"`
 	FailReason   string    `json:"fail_reason"`

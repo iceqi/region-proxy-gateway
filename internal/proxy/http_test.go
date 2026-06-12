@@ -12,14 +12,10 @@ import (
 	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
-	"github.com/iceqi/region-proxy-gateway/internal/node"
-	"github.com/iceqi/region-proxy-gateway/internal/session"
-	"github.com/iceqi/region-proxy-gateway/internal/strategy"
-	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
 
 func TestHTTPConnectWithoutAuthReturns407(t *testing.T) {
-	server := newHTTPTestServer(&fakeSessionProvider{})
+	server := newHTTPTestServer(&fakeDialer{})
 	client, proxy := net.Pipe()
 	defer client.Close()
 
@@ -39,18 +35,17 @@ func TestHTTPConnectWithoutAuthReturns407(t *testing.T) {
 }
 
 func TestHTTPConnectWithValidAuthCreatesSessionAndReturns200(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	provider := &fakeSessionProvider{sess: session.Session{Tunnel: tun}}
-	server := newHTTPTestServer(provider)
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'C')
 
-	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -64,32 +59,32 @@ func TestHTTPConnectWithValidAuthCreatesSessionAndReturns200(t *testing.T) {
 	}
 	upstreamPeer.Close()
 
-	if provider.calls != 1 {
-		t.Fatalf("provider calls = %d, want 1", provider.calls)
+	if dialer.calls != 1 {
+		t.Fatalf("dialer calls = %d, want 1", dialer.calls)
 	}
-	if provider.gotStrategy.Key() != "jp-10" {
-		t.Fatalf("strategy = %q, want jp-10", provider.gotStrategy.Key())
+	if dialer.gotChannelID != "jp-3000" {
+		t.Fatalf("channel id = %q, want jp-3000", dialer.gotChannelID)
 	}
-	if tun.gotNetwork != "tcp" {
-		t.Fatalf("dial network = %q, want tcp", tun.gotNetwork)
+	if dialer.gotNetwork != "tcp" {
+		t.Fatalf("dial network = %q, want tcp", dialer.gotNetwork)
 	}
-	if tun.gotAddress != "example.com:443" {
-		t.Fatalf("dial address = %q, want example.com:443", tun.gotAddress)
+	if dialer.gotAddress != "example.com:443" {
+		t.Fatalf("dial address = %q, want example.com:443", dialer.gotAddress)
 	}
 }
 
 func TestHTTPConnectRelaysBytesThroughTunnelDialer(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'C')
 
-	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	clientReader := bufio.NewReader(client)
@@ -136,17 +131,17 @@ func TestHTTPConnectRelaysBytesThroughTunnelDialer(t *testing.T) {
 }
 
 func TestHTTPConnectRelaysBufferedBytesAfterHeaders(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'C')
 
-	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\nhello"); err != nil {
+	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\n\r\nhello"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	clientReader := bufio.NewReader(client)
@@ -167,13 +162,13 @@ func TestHTTPConnectRelaysBufferedBytesAfterHeaders(t *testing.T) {
 }
 
 func TestPlainHTTPProxyRequestForwardsOriginForm(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'G')
 
@@ -201,7 +196,7 @@ func TestPlainHTTPProxyRequestForwardsOriginForm(t *testing.T) {
 		upstreamRequest <- "ok"
 	}()
 
-	if _, err := io.WriteString(client, "ET http://example.com/path?q=1 HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\nProxy-Connection: keep-alive\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(client, "ET http://example.com/path?q=1 HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\nProxy-Connection: keep-alive\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -217,19 +212,19 @@ func TestPlainHTTPProxyRequestForwardsOriginForm(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for upstream request")
 	}
-	if tun.gotAddress != "example.com:80" {
-		t.Fatalf("dial address = %q, want example.com:80", tun.gotAddress)
+	if dialer.gotAddress != "example.com:80" {
+		t.Fatalf("dial address = %q, want example.com:80", dialer.gotAddress)
 	}
 }
 
 func TestPlainHTTPProxyResponseDoesNotWaitForClientClose(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
-	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'G')
 
@@ -242,7 +237,7 @@ func TestPlainHTTPProxyResponseDoesNotWaitForClientClose(t *testing.T) {
 		_, _ = io.WriteString(upstreamPeer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
 	}()
 
-	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -262,14 +257,14 @@ func TestPlainHTTPProxyResponseDoesNotWaitForClientClose(t *testing.T) {
 }
 
 func TestPlainHTTPProxyKeepAliveResponseFinishesTracking(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
 	tracker := connection.NewTracker()
-	server := NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, &fakeSessionProvider{sess: session.Session{Tunnel: tun}}, tracker)
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", dialer, tracker)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	done := make(chan struct{}, 1)
 	go func() {
@@ -286,7 +281,7 @@ func TestPlainHTTPProxyKeepAliveResponseFinishesTracking(t *testing.T) {
 		_, _ = io.WriteString(upstreamPeer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok")
 	}()
 
-	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\n\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -313,14 +308,14 @@ func TestPlainHTTPProxyKeepAliveResponseFinishesTracking(t *testing.T) {
 }
 
 func TestPlainHTTPProxyTracksUploadBytes(t *testing.T) {
-	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
 	tracker := connection.NewTracker()
-	server := NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, &fakeSessionProvider{sess: session.Session{Tunnel: tun}}, tracker)
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", dialer, tracker)
 	client, proxy := net.Pipe()
 	defer client.Close()
 	upstream, upstreamPeer := net.Pipe()
 	defer upstreamPeer.Close()
-	tun.dialResult <- fakeDial{conn: upstream}
+	dialer.dialResult <- fakeDial{conn: upstream}
 
 	go server.handleHTTP(proxy, 'P')
 
@@ -353,7 +348,7 @@ func TestPlainHTTPProxyTracksUploadBytes(t *testing.T) {
 		}
 	}()
 
-	if _, err := io.WriteString(client, "OST http://example.com/upload HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\nContent-Length: 7\r\n\r\npayload"); err != nil {
+	if _, err := io.WriteString(client, "OST http://example.com/upload HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("proxy", "secret")+"\r\nContent-Length: 7\r\n\r\npayload"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 	resp := readHTTPResponse(t, client)
@@ -371,8 +366,8 @@ func TestPlainHTTPProxyTracksUploadBytes(t *testing.T) {
 	}
 }
 
-func newHTTPTestServer(provider SessionProvider) *Server {
-	return NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, provider, connection.NewTracker())
+func newHTTPTestServer(dialer Dialer) *Server {
+	return NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", dialer, connection.NewTracker())
 }
 
 func basicAuth(username, password string) string {
@@ -397,55 +392,30 @@ func readLine(t *testing.T, reader *bufio.Reader) string {
 	return line
 }
 
-type fakeSessionProvider struct {
-	mu          sync.Mutex
-	sess        session.Session
-	err         error
-	calls       int
-	gotStrategy strategy.Strategy
-}
-
-func (p *fakeSessionProvider) GetOrCreate(ctx context.Context, strat strategy.Strategy) (session.Session, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.calls++
-	p.gotStrategy = strat
-	return p.sess, p.err
-}
-
 type fakeDial struct {
 	conn net.Conn
 	err  error
 }
 
-type fakeTunnel struct {
-	dialResult chan fakeDial
-	gotNetwork string
-	gotAddress string
+type fakeDialer struct {
+	mu           sync.Mutex
+	dialResult   chan fakeDial
+	calls        int
+	gotChannelID string
+	gotNetwork   string
+	gotAddress   string
 }
 
-func (t *fakeTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
-	return nil
-}
-
-func (t *fakeTunnel) Stop(ctx context.Context) error {
-	return nil
-}
-
-func (t *fakeTunnel) Switch(ctx context.Context, n node.Node) error {
-	return nil
-}
-
-func (t *fakeTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	t.gotNetwork = network
-	t.gotAddress = address
-	if t.dialResult == nil {
+func (d *fakeDialer) DialContext(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	d.mu.Lock()
+	d.calls++
+	d.gotChannelID = channelID
+	d.gotNetwork = network
+	d.gotAddress = address
+	d.mu.Unlock()
+	if d.dialResult == nil {
 		return nil, context.Canceled
 	}
-	result := <-t.dialResult
+	result := <-d.dialResult
 	return result.conn, result.err
-}
-
-func (t *fakeTunnel) Status() tunnel.Status {
-	return tunnel.Status{}
 }

@@ -12,9 +12,9 @@ import (
 func TestServerAuthenticate(t *testing.T) {
 	server := NewServer(
 		"127.0.0.1:0",
+		"jp-3000",
+		"proxy",
 		"secret",
-		[]string{"jp", "us"},
-		[]int{0, 10},
 		nil,
 		connection.NewTracker(),
 	)
@@ -26,31 +26,19 @@ func TestServerAuthenticate(t *testing.T) {
 		wantError bool
 	}{
 		{
-			name:      "valid strategy credentials",
-			username:  "jp-10",
+			name:      "valid proxy credentials",
+			username:  "proxy",
 			password:  "secret",
 			wantError: false,
 		},
 		{
 			name:      "wrong password",
-			username:  "jp-10",
+			username:  "proxy",
 			password:  "wrong",
 			wantError: true,
 		},
 		{
-			name:      "disallowed region",
-			username:  "kr-10",
-			password:  "secret",
-			wantError: true,
-		},
-		{
-			name:      "disallowed rotation minutes",
-			username:  "jp-5",
-			password:  "secret",
-			wantError: true,
-		},
-		{
-			name:      "invalid username",
+			name:      "wrong username",
 			username:  "invalid",
 			password:  "secret",
 			wantError: true,
@@ -59,7 +47,7 @@ func TestServerAuthenticate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := server.authenticate(tt.username, tt.password)
+			err := server.authenticate(tt.username, tt.password)
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("authenticate returned nil error")
@@ -69,18 +57,12 @@ func TestServerAuthenticate(t *testing.T) {
 			if err != nil {
 				t.Fatalf("authenticate returned error: %v", err)
 			}
-			if got.Region != "jp" {
-				t.Fatalf("region = %q, want %q", got.Region, "jp")
-			}
-			if got.RotateMinutes != 10 {
-				t.Fatalf("rotate minutes = %d, want %d", got.RotateMinutes, 10)
-			}
 		})
 	}
 }
 
 func TestServerDispatchesSOCKS5ByFirstByte(t *testing.T) {
-	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", nil, connection.NewTracker())
 	dispatched := make(chan byte, 1)
 	server.socks5Handler = func(conn net.Conn) {
 		defer conn.Close()
@@ -111,7 +93,7 @@ func TestServerDispatchesSOCKS5ByFirstByte(t *testing.T) {
 }
 
 func TestServerDispatchesHTTPByFirstByte(t *testing.T) {
-	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", nil, connection.NewTracker())
 	dispatched := make(chan byte, 1)
 	server.socks5Handler = func(conn net.Conn) {
 		defer conn.Close()
@@ -147,7 +129,7 @@ func TestServerServeReturnsWhenListenerCloses(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	server := NewServer(listener.Addr().String(), "secret", nil, nil, nil, connection.NewTracker())
+	server := NewServer(listener.Addr().String(), "jp-3000", "proxy", "secret", nil, connection.NewTracker())
 	done := make(chan error, 1)
 	go func() {
 		done <- server.Serve(listener)
@@ -169,7 +151,7 @@ func TestServerServeReturnsWhenListenerCloses(t *testing.T) {
 
 func TestServerServeReturnsUnexpectedAcceptError(t *testing.T) {
 	wantErr := errors.New("accept failed")
-	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", nil, connection.NewTracker())
 	listener := &failingListener{err: &net.OpError{Op: "accept", Net: "tcp", Err: wantErr}}
 
 	err := server.Serve(listener)
@@ -179,7 +161,7 @@ func TestServerServeReturnsUnexpectedAcceptError(t *testing.T) {
 }
 
 func TestServerClosesIdleConnectionAfterHandshakeTimeout(t *testing.T) {
-	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
+	server := NewServer("127.0.0.1:0", "jp-3000", "proxy", "secret", nil, connection.NewTracker())
 	server.HandshakeTimeout = 20 * time.Millisecond
 	client, upstream := net.Pipe()
 	defer client.Close()

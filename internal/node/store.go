@@ -37,13 +37,13 @@ func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 		}
 
 		if avoidID != "" && node.ID == avoidID {
-			if bestAvoidedIndex == -1 || node.LatencyMS < s.nodes[bestAvoidedIndex].LatencyMS {
+			if bestAvoidedIndex == -1 || better(node, s.nodes[bestAvoidedIndex]) {
 				bestAvoidedIndex = i
 			}
 			continue
 		}
 
-		if bestIndex == -1 || node.LatencyMS < s.nodes[bestIndex].LatencyMS {
+		if bestIndex == -1 || better(node, s.nodes[bestIndex]) {
 			bestIndex = i
 		}
 	}
@@ -55,4 +55,17 @@ func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 		return s.nodes[bestAvoidedIndex], true
 	}
 	return Node{}, false
+}
+
+func better(a, b Node) bool {
+	if a.Speed != b.Speed {
+		return a.Speed > b.Speed
+	}
+	if a.LatencyMS == 0 {
+		return false
+	}
+	if b.LatencyMS == 0 {
+		return true
+	}
+	return a.LatencyMS < b.LatencyMS
 }

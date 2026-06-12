@@ -40,10 +40,6 @@ mkdir -p "${INSTALL_DIR}/data"
 cd "${INSTALL_DIR}"
 go build -o region-proxy-gateway ./cmd/region-proxy-gateway
 
-if [[ -f "${INSTALL_DIR}/data/nodes.example.json" && ! -f "${INSTALL_DIR}/data/nodes.json" ]]; then
-  cp "${INSTALL_DIR}/data/nodes.example.json" "${INSTALL_DIR}/data/nodes.json.example"
-fi
-
 if command -v systemctl >/dev/null 2>&1; then
   cat >"${SERVICE_FILE}" <<EOF
 [Unit]
@@ -69,6 +65,6 @@ else
 fi
 
 echo "Admin: http://127.0.0.1:8787"
-echo "HTTP proxy example: http://jp-10:PASSWORD@SERVER_IP:3000"
-echo "SOCKS5 proxy example: socks5://jp-10:PASSWORD@SERVER_IP:3000"
-echo "OpenVPN nodes example: ${INSTALL_DIR}/data/nodes.example.json"
+echo "Config: ${INSTALL_DIR}/data/config.json"
+echo "HTTP proxy example: http://proxy:change-me-proxy@SERVER_IP:3000"
+echo "SOCKS5 proxy example: socks5://proxy:change-me-proxy@SERVER_IP:3000"
