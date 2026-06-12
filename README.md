@@ -62,7 +62,11 @@ fake
 The fake backend keeps the gateway runnable without root privileges, OpenVPN,
 or a tun device.
 
-To opt into the OpenVPN process lifecycle backend, configure:
+The current binary starts from built-in defaults and does not yet load a config
+file or environment variables. The OpenVPN backend is available in code through
+`config.Config`; runtime config loading is a follow-up task.
+
+When runtime config loading is added, the intended shape is:
 
 ```json
 {
