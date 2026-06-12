@@ -135,6 +135,37 @@ func TestHTTPConnectRelaysBytesThroughTunnelDialer(t *testing.T) {
 	}
 }
 
+func TestHTTPConnectRelaysBufferedBytesAfterHeaders(t *testing.T) {
+	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	tun.dialResult <- fakeDial{conn: upstream}
+
+	go server.handleHTTP(proxy, 'C')
+
+	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\nhello"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	clientReader := bufio.NewReader(client)
+	if statusLine := readLine(t, clientReader); statusLine != "HTTP/1.1 200 Connection Established\r\n" {
+		t.Fatalf("status line = %q, want 200", statusLine)
+	}
+	if blank := readLine(t, clientReader); blank != "\r\n" {
+		t.Fatalf("blank line = %q, want CRLF", blank)
+	}
+
+	buf := make([]byte, len("hello"))
+	if _, err := io.ReadFull(upstreamPeer, buf); err != nil {
+		t.Fatalf("upstream read buffered bytes: %v", err)
+	}
+	if string(buf) != "hello" {
+		t.Fatalf("upstream read = %q, want hello", string(buf))
+	}
+}
+
 func TestPlainHTTPProxyRequestForwardsOriginForm(t *testing.T) {
 	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
 	server := newHTTPTestServer(&fakeSessionProvider{sess: session.Session{Tunnel: tun}})
@@ -227,6 +258,57 @@ func TestPlainHTTPProxyResponseDoesNotWaitForClientClose(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for plain HTTP response")
+	}
+}
+
+func TestPlainHTTPProxyKeepAliveResponseFinishesTracking(t *testing.T) {
+	tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+	tracker := connection.NewTracker()
+	server := NewServer("127.0.0.1:0", "secret", []string{"jp"}, []int{10}, &fakeSessionProvider{sess: session.Session{Tunnel: tun}}, tracker)
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	tun.dialResult <- fakeDial{conn: upstream}
+
+	done := make(chan struct{}, 1)
+	go func() {
+		server.handleHTTP(proxy, 'G')
+		done <- struct{}{}
+	}()
+
+	go func() {
+		reader := bufio.NewReader(upstreamPeer)
+		_, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		_, _ = io.WriteString(upstreamPeer, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nok")
+	}()
+
+	if _, err := io.WriteString(client, "ET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nProxy-Authorization: "+basicAuth("jp-10", "secret")+"\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp := readHTTPResponse(t, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "ok" {
+		t.Fatalf("body = %q, want ok", string(body))
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for handler to finish")
+	}
+	if tracker.ActiveCount() != 0 {
+		t.Fatalf("active connections = %d, want 0", tracker.ActiveCount())
 	}
 }
 

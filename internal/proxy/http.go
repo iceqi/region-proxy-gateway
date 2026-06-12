@@ -146,11 +146,30 @@ func (s *Server) trackHTTPResponse(client net.Conn, upstream net.Conn, strategyK
 	if s.connections != nil {
 		id = s.connections.Start(clientAddr, "http", strategyKey, target)
 	}
-	down, _ := io.Copy(client, upstream)
+	resp, err := http.ReadResponse(bufio.NewReader(upstream), nil)
+	if err != nil {
+		if s.connections != nil {
+			s.connections.Finish(id)
+		}
+		return
+	}
+	counter := &countingWriter{writer: client}
+	err = resp.Write(counter)
 	if s.connections != nil {
-		s.connections.AddBytes(id, 0, down)
+		s.connections.AddBytes(id, 0, counter.count)
 		s.connections.Finish(id)
 	}
+}
+
+type countingWriter struct {
+	writer io.Writer
+	count  int64
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	w.count += int64(n)
+	return n, err
 }
 
 func relay(client net.Conn, upstream net.Conn, buffered *bufio.Reader) (int64, int64) {
