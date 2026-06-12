@@ -100,6 +100,9 @@ const indexHTML = `<!doctype html>
                 <div class="card-title">节点列表</div>
                 <div class="muted">点击切换会弹窗选择通道，然后把该通道切到当前节点</div>
               </div>
+              <a-space>
+                <a-button :loading="probingBatch" @click="probeVisibleNodes">测试当前列表延迟</a-button>
+              </a-space>
             </div>
             <div class="card-body">
               <div class="filter-grid">
@@ -235,6 +238,7 @@ const indexHTML = `<!doctype html>
           loading: false,
           updatingNodes: false,
           restarting: false,
+          probingBatch: false,
           channels: [],
           nodes: [],
           connections: [],
@@ -388,6 +392,20 @@ const indexHTML = `<!doctype html>
             message.error(err.message);
           } finally {
             this.probing[nodeID] = false;
+          }
+        },
+        async probeVisibleNodes() {
+          const nodeIDs = this.visibleNodes.map(n => n.id).filter(Boolean).slice(0, 120);
+          if (!nodeIDs.length) return message.warning('当前列表没有可测速的节点');
+          this.probingBatch = true;
+          try {
+            const body = await this.request('nodes/probe-batch', { method: 'POST', body: JSON.stringify({ node_ids: nodeIDs }) });
+            message.success('已测试 ' + (body.count || 0) + ' 个节点');
+            await this.load(false);
+          } catch (err) {
+            message.error(err.message);
+          } finally {
+            this.probingBatch = false;
           }
         },
         openChannelDialog(row) {

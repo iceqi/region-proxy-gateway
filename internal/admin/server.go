@@ -135,6 +135,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleRefreshNodes(w, r)
 		return
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/nodes/probe-batch" {
+		s.handleProbeNodes(w, r)
+		return
+	}
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/nodes/") && strings.HasSuffix(r.URL.Path, "/probe") {
 		s.handleProbeNode(w, r)
 		return
@@ -324,6 +328,96 @@ func (s *Server) handleProbeNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"node": checked})
+}
+
+func (s *Server) handleProbeNodes(w http.ResponseWriter, r *http.Request) {
+	if s.nodes == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node store is not configured"})
+		return
+	}
+	if s.checkNode == nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node checker is not configured"})
+		return
+	}
+	var body struct {
+		NodeIDs []string `json:"node_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	nodeIDs := cleanNodeIDs(body.NodeIDs, 120)
+	if len(nodeIDs) == 0 {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "node_ids is required"})
+		return
+	}
+
+	type result struct {
+		id   string
+		node node.Node
+		ok   bool
+	}
+	nodeByID := make(map[string]node.Node, len(nodeIDs))
+	for _, n := range s.nodes.List() {
+		nodeByID[n.ID] = n
+	}
+	const workers = 8
+	jobs := make(chan string)
+	results := make(chan result, len(nodeIDs))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for nodeID := range jobs {
+				n, ok := nodeByID[nodeID]
+				if !ok {
+					results <- result{id: nodeID}
+					continue
+				}
+				checked := s.checkNode(r.Context(), n)
+				s.nodes.Update(nodeID, func(node.Node) node.Node { return checked })
+				results <- result{id: nodeID, node: checked, ok: true}
+			}
+		}()
+	}
+	for _, nodeID := range nodeIDs {
+		jobs <- nodeID
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	checked := make([]node.Node, 0, len(nodeIDs))
+	missing := make([]string, 0)
+	for result := range results {
+		if !result.ok {
+			missing = append(missing, result.id)
+			continue
+		}
+		checked = append(checked, result.node)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"count": len(checked), "nodes": checked, "missing": missing})
+}
+
+func cleanNodeIDs(ids []string, limit int) []string {
+	seen := make(map[string]struct{}, len(ids))
+	cleaned := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		cleaned = append(cleaned, id)
+		if limit > 0 && len(cleaned) >= limit {
+			break
+		}
+	}
+	return cleaned
 }
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {

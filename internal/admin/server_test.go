@@ -147,6 +147,55 @@ func TestProbeNodeUpdatesNodeStore(t *testing.T) {
 	}
 }
 
+func TestProbeNodesUpdatesSelectedNodes(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	nodes.Replace([]node.Node{
+		{ID: "jp-1", Region: "jp", Available: true},
+		{ID: "jp-2", Region: "jp", Available: true},
+		{ID: "us-1", Region: "us", Available: true},
+	})
+	server := NewServer(manager, nodes, nil, WithNodeChecker(func(ctx context.Context, n node.Node) node.Node {
+		if n.ID == "jp-1" {
+			n.LatencyMS = 21
+		} else {
+			n.LatencyMS = 34
+		}
+		n.Available = true
+		n.ProbeStatus = "available"
+		return n
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/nodes/probe-batch", bytes.NewBufferString(`{"node_ids":["jp-1","jp-2"]}`))
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Count int         `json:"count"`
+		Nodes []node.Node `json:"nodes"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Count != 2 || len(body.Nodes) != 2 {
+		t.Fatalf("body = %+v, want 2 checked nodes", body)
+	}
+	got := nodes.List()
+	latencyByID := map[string]int{}
+	for _, n := range got {
+		latencyByID[n.ID] = n.LatencyMS
+	}
+	if latencyByID["jp-1"] != 21 || latencyByID["jp-2"] != 34 {
+		t.Fatalf("latencies = %+v, want selected jp nodes updated", latencyByID)
+	}
+	if latencyByID["us-1"] != 0 {
+		t.Fatalf("us-1 latency = %d, want untouched", latencyByID["us-1"])
+	}
+}
+
 func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -234,7 +283,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
