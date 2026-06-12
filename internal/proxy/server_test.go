@@ -8,6 +8,76 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
 )
 
+func TestServerAuthenticate(t *testing.T) {
+	server := NewServer(
+		"127.0.0.1:0",
+		"secret",
+		[]string{"jp", "us"},
+		[]int{0, 10},
+		nil,
+		connection.NewTracker(),
+	)
+
+	tests := []struct {
+		name      string
+		username  string
+		password  string
+		wantError bool
+	}{
+		{
+			name:      "valid strategy credentials",
+			username:  "jp-10",
+			password:  "secret",
+			wantError: false,
+		},
+		{
+			name:      "wrong password",
+			username:  "jp-10",
+			password:  "wrong",
+			wantError: true,
+		},
+		{
+			name:      "disallowed region",
+			username:  "kr-10",
+			password:  "secret",
+			wantError: true,
+		},
+		{
+			name:      "disallowed rotation minutes",
+			username:  "jp-5",
+			password:  "secret",
+			wantError: true,
+		},
+		{
+			name:      "invalid username",
+			username:  "invalid",
+			password:  "secret",
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := server.authenticate(tt.username, tt.password)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("authenticate returned nil error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("authenticate returned error: %v", err)
+			}
+			if got.Region != "jp" {
+				t.Fatalf("region = %q, want %q", got.Region, "jp")
+			}
+			if got.RotateMinutes != 10 {
+				t.Fatalf("rotate minutes = %d, want %d", got.RotateMinutes, 10)
+			}
+		})
+	}
+}
+
 func TestServerDispatchesSOCKS5ByFirstByte(t *testing.T) {
 	server := NewServer("127.0.0.1:0", "secret", nil, nil, nil, connection.NewTracker())
 	dispatched := make(chan byte, 1)

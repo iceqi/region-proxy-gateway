@@ -61,6 +61,43 @@ func (s *Server) Serve(listener net.Listener) error {
 	}
 }
 
+func (s *Server) authenticate(username, password string) (strategy.Strategy, error) {
+	if !CheckPassword(password, s.ProxyPassword) {
+		return strategy.Strategy{}, errors.New("invalid proxy credentials")
+	}
+
+	strat, err := strategy.Parse(username)
+	if err != nil {
+		return strategy.Strategy{}, errors.New("invalid proxy credentials")
+	}
+	if !containsString(s.AllowedRegions, strat.Region) {
+		return strategy.Strategy{}, errors.New("invalid proxy credentials")
+	}
+	if !containsInt(s.AllowedRotateMinutes, strat.RotateMinutes) {
+		return strategy.Strategy{}, errors.New("invalid proxy credentials")
+	}
+
+	return strat, nil
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInt(items []int, want int) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleConn(conn net.Conn) {
 	var first [1]byte
 	if _, err := conn.Read(first[:]); err != nil {
