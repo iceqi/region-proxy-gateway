@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
@@ -14,7 +16,10 @@ func TestBuildServicesReportsDemoNodesAndProxyAddr(t *testing.T) {
 	cfg := config.Default()
 	cfg.ProxyHost = "127.0.0.1"
 	cfg.ProxyPort = 12345
-	services := buildServices(cfg)
+	services, err := buildServices(cfg)
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -53,7 +58,10 @@ func TestBuildServicesReportsDemoNodesAndProxyAddr(t *testing.T) {
 }
 
 func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
-	services := buildServices(config.Default())
+	services, err := buildServices(config.Default())
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
 
 	services.tracker.Start("127.0.0.1:50000", "http", "jp:10", "example.com:443")
 
@@ -74,5 +82,36 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 
 	if body.ConnectionCount != 1 {
 		t.Fatalf("connection_count = %d, want 1", body.ConnectionCount)
+	}
+}
+
+func TestBuildServicesLoadsOpenVPNNodesFromDataDir(t *testing.T) {
+	dir := t.TempDir()
+	raw := `[{"id":"jp-real","region":"jp","openvpn":"client\nremote vpn-jp.example.net 1194 udp\n"}]`
+	if err := os.WriteFile(filepath.Join(dir, "nodes.json"), []byte(raw), 0600); err != nil {
+		t.Fatalf("write nodes file: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendOpenVPN
+	cfg.DataDir = dir
+
+	services, err := buildServices(cfg)
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
+	nodes := services.nodes.List()
+	if len(nodes) != 1 || nodes[0].ID != "jp-real" {
+		t.Fatalf("nodes = %+v, want jp-real from data dir", nodes)
+	}
+}
+
+func TestBuildServicesOpenVPNRequiresNodeFile(t *testing.T) {
+	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendOpenVPN
+	cfg.DataDir = t.TempDir()
+
+	if _, err := buildServices(cfg); err == nil {
+		t.Fatalf("expected missing nodes file error")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/iceqi/region-proxy-gateway/internal/admin"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
@@ -37,7 +38,10 @@ func main() {
 		log.Fatalf("validate config: %v", err)
 	}
 
-	services := buildServices(cfg)
+	services, err := buildServices(cfg)
+	if err != nil {
+		log.Fatalf("build services: %v", err)
+	}
 	adminAddr := fmt.Sprintf("%s:%d", cfg.AdminHost, cfg.AdminPort)
 	proxyAddr := services.proxy.ListenAddr
 
@@ -57,16 +61,14 @@ func main() {
 	log.Fatal(http.ListenAndServe(adminAddr, services.admin))
 }
 
-func buildServices(cfg config.Config) services {
+func buildServices(cfg config.Config) (services, error) {
 	nodes := node.NewStore()
-	nodes.Replace([]node.Node{
-		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", LatencyMS: 50, Available: true},
-		{ID: "us-demo", Region: "us", IP: "198.51.100.10", LatencyMS: 60, Available: true},
-	})
-
-	factory := func(key string) tunnel.Tunnel {
-		return tunnel.NewFake(key)
+	factory, loadedNodes, err := buildTunnelFactory(cfg)
+	if err != nil {
+		return services{}, err
 	}
+	nodes.Replace(loadedNodes)
+
 	sessions := session.NewManager(nodes, cfg.MaxActiveSessions, factory)
 	tracker := connection.NewTracker()
 	proxyAddr := fmt.Sprintf("%s:%d", cfg.ProxyHost, cfg.ProxyPort)
@@ -84,5 +86,29 @@ func buildServices(cfg config.Config) services {
 		nodes:    nodes,
 		sessions: sessions,
 		tracker:  tracker,
+	}, nil
+}
+
+func buildTunnelFactory(cfg config.Config) (session.Factory, []node.Node, error) {
+	switch cfg.TunnelBackend {
+	case config.TunnelBackendFake:
+		return func(key string) tunnel.Tunnel { return tunnel.NewFake(key) }, demoNodes(), nil
+	case config.TunnelBackendOpenVPN:
+		nodes, err := node.LoadFile(filepath.Join(cfg.DataDir, "nodes.json"), node.RequireOpenVPNConfig)
+		if err != nil {
+			return nil, nil, err
+		}
+		return func(key string) tunnel.Tunnel {
+			return tunnel.NewOpenVPN(tunnel.OpenVPNConfig{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand})
+		}, nodes, nil
+	default:
+		return nil, nil, fmt.Errorf("unsupported tunnel backend %q", cfg.TunnelBackend)
+	}
+}
+
+func demoNodes() []node.Node {
+	return []node.Node{
+		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", LatencyMS: 50, Available: true},
+		{ID: "us-demo", Region: "us", IP: "198.51.100.10", LatencyMS: 60, Available: true},
 	}
 }
