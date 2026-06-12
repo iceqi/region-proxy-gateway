@@ -199,7 +199,7 @@ func (s *Store) ReplaceNodes(ctx context.Context, nodes []node.Node) error {
 		if n.Available {
 			available = 1
 		}
-		if _, err := stmt.ExecContext(ctx, n.ID, n.Region, n.Country, n.IP, n.Hostname, n.Port, n.Proto, n.OpenVPN, n.LatencyMS, n.Speed, available, encodeTime(n.LastTestedAt), n.FailReason, n.Owner, n.ASN, n.ASName, n.Location, n.IPType, n.Quality, n.PurityScore); err != nil {
+		if _, err := stmt.ExecContext(ctx, n.ID, n.Region, n.Country, n.IP, n.Hostname, n.Port, n.Proto, n.OpenVPN, 0, n.Speed, available, encodeTime(n.LastTestedAt), n.FailReason, n.Owner, n.ASN, n.ASName, n.Location, n.IPType, n.Quality, n.PurityScore); err != nil {
 			return err
 		}
 	}
@@ -222,6 +222,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]node.Node, error) {
 			return nil, err
 		}
 		n.Available = available != 0
+		n.LatencyMS = 0
 		n.LastTestedAt = decodeTime(lastTestedAt)
 		nodes = append(nodes, n)
 	}

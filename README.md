@@ -166,9 +166,10 @@ admin_password
 
 测速说明：
 
-- 优先使用系统 `ping` 获取延迟。
-- TCP OpenVPN 节点会额外做 TCP 端口连通检查。
-- UDP OpenVPN 节点无法在不真正建立 VPN 握手的情况下完整验证端口，只能判断主机 ping 可达和延迟。
+- 不使用 VPNGate CSV 里的 `Ping` 作为延迟，因为那不是从你的服务器测出来的。
+- TCP OpenVPN 节点使用从当前服务器到节点 OpenVPN 端口的 TCP 连接耗时作为实时延迟。
+- UDP OpenVPN 节点无法在不真正建立 VPN 握手的情况下完整验证端口，只能尝试 ICMP ping；如果对方禁 ping，会显示未知，不直接判定节点不可用。
+- 自动优选会先对同地区候选节点做实时检测，优先选择实时可连接且延迟更低的节点。
 
 自动更新节点间隔由 `node_refresh_interval` 控制，比如 `20m`、`1h`。管理面板可以保存这个值，重启服务后生效。
 

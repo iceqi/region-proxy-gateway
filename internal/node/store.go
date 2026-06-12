@@ -71,15 +71,47 @@ func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 	return Node{}, false
 }
 
+func (s *Store) CandidatesByRegion(region, avoidID string, limit int) []Node {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	candidates := make([]Node, 0)
+	for _, node := range s.nodes {
+		if !node.Available || node.Region != region {
+			continue
+		}
+		if avoidID != "" && node.ID == avoidID {
+			continue
+		}
+		candidates = append(candidates, node)
+	}
+	sortNodes(candidates)
+	if limit > 0 && len(candidates) > limit {
+		return append([]Node(nil), candidates[:limit]...)
+	}
+	return append([]Node(nil), candidates...)
+}
+
 func better(a, b Node) bool {
+	if a.LatencyMS == 0 && b.LatencyMS > 0 {
+		return false
+	}
+	if b.LatencyMS == 0 && a.LatencyMS > 0 {
+		return true
+	}
+	if a.LatencyMS > 0 && b.LatencyMS > 0 && a.LatencyMS != b.LatencyMS {
+		return a.LatencyMS < b.LatencyMS
+	}
 	if a.Speed != b.Speed {
 		return a.Speed > b.Speed
 	}
-	if a.LatencyMS == 0 {
-		return false
-	}
-	if b.LatencyMS == 0 {
-		return true
-	}
 	return a.LatencyMS < b.LatencyMS
+}
+
+func sortNodes(nodes []Node) {
+	for i := 1; i < len(nodes); i++ {
+		for j := i; j > 0 && better(nodes[j], nodes[j-1]); j-- {
+			nodes[j], nodes[j-1] = nodes[j-1], nodes[j]
+		}
+	}
 }

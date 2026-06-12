@@ -22,6 +22,42 @@ func TestBestByRegionReturnsLowestLatencyAvailableNode(t *testing.T) {
 	}
 }
 
+func TestBestByRegionPrefersMeasuredLatencyOverCSVSpeed(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-low-latency", Region: "jp", LatencyMS: 20, Speed: 100, Available: true},
+		{ID: "jp-high-speed", Region: "jp", LatencyMS: 80, Speed: 9000, Available: true},
+	})
+
+	got, ok := store.BestByRegion("jp", "")
+	if !ok {
+		t.Fatal("expected a jp node")
+	}
+	if got.ID != "jp-low-latency" {
+		t.Fatalf("expected jp-low-latency, got %q", got.ID)
+	}
+}
+
+func TestCandidatesByRegionReturnsSortedCopy(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-slow", Region: "jp", LatencyMS: 80, Available: true},
+		{ID: "jp-fast", Region: "jp", LatencyMS: 20, Available: true},
+		{ID: "jp-current", Region: "jp", LatencyMS: 10, Available: true},
+		{ID: "us-fast", Region: "us", LatencyMS: 10, Available: true},
+	})
+
+	got := store.CandidatesByRegion("jp", "jp-current", 1)
+	if len(got) != 1 || got[0].ID != "jp-fast" {
+		t.Fatalf("candidates = %+v, want only jp-fast", got)
+	}
+	got[0].ID = "mutated"
+	again := store.CandidatesByRegion("jp", "jp-current", 1)
+	if again[0].ID != "jp-fast" {
+		t.Fatalf("candidates should be copied, got %+v", again)
+	}
+}
+
 func TestBestByRegionAvoidsPreviousNodeWhenAlternativeExists(t *testing.T) {
 	store := NewStore()
 	store.Replace([]Node{

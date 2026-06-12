@@ -113,7 +113,6 @@ func ParseCSV(r io.Reader) ([]node.Node, error) {
 			Port:      remotePort,
 			Proto:     remoteProto,
 			OpenVPN:   string(decoded),
-			LatencyMS: parseInt(csvValue(record, header, "Ping")),
 			Speed:     parseInt64(csvValue(record, header, "Speed")),
 			Available: true,
 		})

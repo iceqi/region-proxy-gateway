@@ -39,6 +39,9 @@ func TestParseCSVDecodesOpenVPNConfigAndSortsNodes(t *testing.T) {
 	if nodes[0].Proto != "udp" {
 		t.Fatalf("proto = %q, want udp", nodes[0].Proto)
 	}
+	if nodes[0].LatencyMS != 0 {
+		t.Fatalf("latency = %d, want 0 because VPNGate CSV ping is not measured from this server", nodes[0].LatencyMS)
+	}
 	if !nodes[0].Available {
 		t.Fatalf("node should be available")
 	}

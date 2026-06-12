@@ -2,6 +2,7 @@ package nodecheck
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -24,7 +25,8 @@ func TestCheckerMeasuresTCPConnectLatency(t *testing.T) {
 
 	checker := Checker{Timeout: time.Second}
 	checker.Ping = func(ctx context.Context, host string, timeout time.Duration) (int, error) {
-		return 18, nil
+		t.Fatalf("tcp node should not use ping latency")
+		return 0, nil
 	}
 	got := checker.Check(context.Background(), node.Node{
 		ID:       "local",
@@ -36,8 +38,8 @@ func TestCheckerMeasuresTCPConnectLatency(t *testing.T) {
 	if !got.Available {
 		t.Fatalf("expected node available, fail reason=%q", got.FailReason)
 	}
-	if got.LatencyMS != 18 {
-		t.Fatalf("latency = %d, want ping latency 18", got.LatencyMS)
+	if got.LatencyMS <= 0 {
+		t.Fatalf("latency = %d, want tcp connect latency", got.LatencyMS)
 	}
 	if got.LastTestedAt.IsZero() {
 		t.Fatalf("expected LastTestedAt")
@@ -47,7 +49,8 @@ func TestCheckerMeasuresTCPConnectLatency(t *testing.T) {
 func TestCheckerMarksFailure(t *testing.T) {
 	checker := Checker{Timeout: 10 * time.Millisecond}
 	checker.Ping = func(ctx context.Context, host string, timeout time.Duration) (int, error) {
-		return 0, context.DeadlineExceeded
+		t.Fatalf("tcp node should fail by tcp connect, not ping")
+		return 0, nil
 	}
 	got := checker.Check(context.Background(), node.Node{
 		ID:       "bad",
@@ -64,6 +67,33 @@ func TestCheckerMarksFailure(t *testing.T) {
 	}
 	if got.ProbeStatus != "unavailable" {
 		t.Fatalf("probe status = %q, want unavailable", got.ProbeStatus)
+	}
+}
+
+func TestCheckerKeepsUDPNodeAvailableWhenPingIsBlocked(t *testing.T) {
+	checker := Checker{Timeout: time.Second}
+	checker.Ping = func(ctx context.Context, host string, timeout time.Duration) (int, error) {
+		return 0, errors.New("icmp blocked")
+	}
+
+	got := checker.Check(context.Background(), node.Node{
+		ID:        "udp",
+		IP:        "203.0.113.10",
+		Proto:     "udp",
+		LatencyMS: 0,
+	})
+
+	if !got.Available {
+		t.Fatalf("UDP node should stay available when only ping is blocked, fail=%q", got.FailReason)
+	}
+	if got.LatencyMS != 0 {
+		t.Fatalf("latency = %d, want unknown 0", got.LatencyMS)
+	}
+	if got.ProbeStatus != "unknown" {
+		t.Fatalf("probe status = %q, want unknown", got.ProbeStatus)
+	}
+	if got.FailReason != "" {
+		t.Fatalf("fail reason = %q, want empty for unknown UDP reachability", got.FailReason)
 	}
 }
 

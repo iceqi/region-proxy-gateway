@@ -15,8 +15,8 @@ import (
 func TestManagerStartsAutoChannelWithBestRegionalNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
-		{ID: "jp-slow", Region: "jp", Hostname: "slow", Speed: 100, LatencyMS: 10, Available: true},
-		{ID: "jp-fast", Region: "jp", Hostname: "fast", Speed: 1000, LatencyMS: 80, Available: true},
+		{ID: "jp-slow", Region: "jp", Hostname: "slow", Speed: 100, LatencyMS: 0, Available: true},
+		{ID: "jp-fast", Region: "jp", Hostname: "fast", Speed: 1000, LatencyMS: 0, Available: true},
 		{ID: "us-fast", Region: "us", Hostname: "us", Speed: 5000, LatencyMS: 10, Available: true},
 	})
 	factory := &recordingFactory{}
@@ -31,7 +31,17 @@ func TestManagerStartsAutoChannelWithBestRegionalNode(t *testing.T) {
 		}},
 		Nodes:         nodes,
 		TunnelFactory: factory.New,
-		DataDir:       t.TempDir(),
+		NodeChecker: func(ctx context.Context, n node.Node) node.Node {
+			if n.ID == "jp-slow" {
+				n.LatencyMS = 15
+			} else {
+				n.LatencyMS = 80
+			}
+			n.Available = true
+			n.ProbeStatus = "available"
+			return n
+		},
+		DataDir: t.TempDir(),
 	})
 
 	if err := manager.Start(context.Background()); err != nil {
@@ -43,11 +53,11 @@ func TestManagerStartsAutoChannelWithBestRegionalNode(t *testing.T) {
 	if len(snapshots) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snapshots))
 	}
-	if snapshots[0].CurrentNodeID != "jp-fast" {
-		t.Fatalf("current node = %q, want jp-fast", snapshots[0].CurrentNodeID)
+	if snapshots[0].CurrentNodeID != "jp-slow" {
+		t.Fatalf("current node = %q, want jp-slow after realtime check", snapshots[0].CurrentNodeID)
 	}
-	if factory.tunnels[0].startedNode.ID != "jp-fast" {
-		t.Fatalf("started node = %q, want jp-fast", factory.tunnels[0].startedNode.ID)
+	if factory.tunnels[0].startedNode.ID != "jp-slow" {
+		t.Fatalf("started node = %q, want jp-slow", factory.tunnels[0].startedNode.ID)
 	}
 }
 

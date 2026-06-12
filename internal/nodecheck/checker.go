@@ -40,27 +40,13 @@ func (c Checker) Check(ctx context.Context, n node.Node) node.Node {
 		return n
 	}
 
-	ping := c.Ping
-	if ping == nil {
-		ping = SystemPing
-	}
-	latency, pingErr := ping(ctx, host, c.Timeout)
-	if pingErr != nil {
-		n.Available = false
-		n.ProbeStatus = "unavailable"
-		n.ProbeMessage = "ping failed: " + pingErr.Error()
-		n.FailReason = n.ProbeMessage
-		n.ProbedAt = time.Now()
-		n.LastTestedAt = n.ProbedAt
-		return n
-	}
-
 	proto := strings.ToLower(n.Proto)
 	if proto == "" {
 		proto = "udp"
 	}
 	if proto == "tcp" || strings.HasPrefix(proto, "tcp") {
-		if err := tcpConnect(ctx, host, n.Port, c.Timeout); err != nil {
+		latency, err := tcpConnectLatency(ctx, host, n.Port, c.Timeout)
+		if err != nil {
 			n.Available = false
 			n.ProbeStatus = "unavailable"
 			n.ProbeMessage = "tcp connect failed: " + err.Error()
@@ -69,32 +55,56 @@ func (c Checker) Check(ctx context.Context, n node.Node) node.Node {
 			n.LastTestedAt = n.ProbedAt
 			return n
 		}
+		n.LatencyMS = latency
+		n.Available = true
+		n.FailReason = ""
+		n.ProbeStatus = "available"
+		n.ProbeMessage = "tcp port ok"
+		n.ProbedAt = time.Now()
+		n.LastTestedAt = n.ProbedAt
+		return n
+	}
+
+	ping := c.Ping
+	if ping == nil {
+		ping = SystemPing
+	}
+	latency, pingErr := ping(ctx, host, c.Timeout)
+	if pingErr != nil {
+		n.Available = true
+		n.ProbeStatus = "unknown"
+		n.ProbeMessage = "ping failed; udp cannot be verified without vpn handshake: " + pingErr.Error()
+		n.FailReason = ""
+		n.ProbedAt = time.Now()
+		n.LastTestedAt = n.ProbedAt
+		return n
 	}
 	n.LatencyMS = latency
 	n.Available = true
 	n.FailReason = ""
 	n.ProbeStatus = "available"
-	if proto == "udp" || strings.HasPrefix(proto, "udp") {
-		n.ProbeMessage = "ping ok; udp port cannot be fully verified without vpn handshake"
-	} else {
-		n.ProbeMessage = "ping ok; tcp port ok"
-	}
+	n.ProbeMessage = "ping ok; udp port cannot be fully verified without vpn handshake"
 	n.ProbedAt = time.Now()
 	n.LastTestedAt = n.ProbedAt
 	return n
 }
 
-func tcpConnect(ctx context.Context, host string, port int, timeout time.Duration) error {
+func tcpConnectLatency(ctx context.Context, host string, port int, timeout time.Duration) (int, error) {
 	if port == 0 {
 		port = 1194
 	}
 	target := net.JoinHostPort(host, fmt.Sprintf("%d", port))
 	dialer := net.Dialer{Timeout: timeout}
+	started := time.Now()
 	conn, err := dialer.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return conn.Close()
+	elapsed := int(time.Since(started).Milliseconds())
+	if elapsed < 1 {
+		elapsed = 1
+	}
+	return elapsed, conn.Close()
 }
 
 var pingTimePattern = regexp.MustCompile(`time[=<]([0-9.]+)\s*ms`)

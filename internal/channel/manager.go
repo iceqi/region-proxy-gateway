@@ -20,11 +20,13 @@ const (
 )
 
 type TunnelFactory func(name string) tunnel.Tunnel
+type NodeChecker func(context.Context, node.Node) node.Node
 
 type Config struct {
 	Channels      []config.Channel
 	Nodes         *node.Store
 	TunnelFactory TunnelFactory
+	NodeChecker   NodeChecker
 	DataDir       string
 	OpenVPNCmd    string
 }
@@ -234,7 +236,7 @@ func (m *Manager) clearError(channelID string) {
 }
 
 func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel) error {
-	n, err := m.selectNode(ch)
+	n, err := m.selectNode(ctx, ch)
 	if err != nil {
 		m.channels[ch.ID] = &runtimeChannel{cfg: ch, err: err.Error()}
 		return err
@@ -300,7 +302,7 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 	if ch.tunnel == nil {
 		return fmt.Errorf("channel %q is not running", channelID)
 	}
-	n, err := m.selectRotationNode(ch.cfg, ch.currentNode.ID)
+	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID)
 	if err != nil {
 		ch.err = err.Error()
 		return err
@@ -318,7 +320,7 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 	return nil
 }
 
-func (m *Manager) selectNode(ch config.Channel) (node.Node, error) {
+func (m *Manager) selectNode(ctx context.Context, ch config.Channel) (node.Node, error) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
@@ -332,22 +334,63 @@ func (m *Manager) selectNode(ch config.Channel) (node.Node, error) {
 		}
 		return n, nil
 	}
-	n, ok := m.cfg.Nodes.BestByRegion(ch.Region, "")
+	n, ok := m.bestCheckedNode(ctx, ch.Region, "")
 	if !ok {
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
 }
 
-func (m *Manager) selectRotationNode(ch config.Channel, currentNodeID string) (node.Node, error) {
+func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, error) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
-	n, ok := m.cfg.Nodes.BestByRegion(ch.Region, currentNodeID)
+	n, ok := m.bestCheckedNode(ctx, ch.Region, currentNodeID)
 	if !ok {
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
+}
+
+func (m *Manager) bestCheckedNode(ctx context.Context, region, avoidID string) (node.Node, bool) {
+	if m.cfg.Nodes == nil {
+		return node.Node{}, false
+	}
+	if m.cfg.NodeChecker == nil {
+		return m.cfg.Nodes.BestByRegion(region, avoidID)
+	}
+	candidates := m.cfg.Nodes.CandidatesByRegion(region, avoidID, 8)
+	if len(candidates) == 0 && avoidID != "" {
+		candidates = m.cfg.Nodes.CandidatesByRegion(region, "", 8)
+	}
+	if len(candidates) == 0 {
+		return node.Node{}, false
+	}
+	checked := make([]node.Node, 0, len(candidates))
+	for _, candidate := range candidates {
+		result := m.cfg.NodeChecker(ctx, candidate)
+		m.cfg.Nodes.Update(candidate.ID, func(node.Node) node.Node { return result })
+		if result.Available && result.ProbeStatus != "unknown" && result.LatencyMS > 0 {
+			checked = append(checked, result)
+		}
+	}
+	if len(checked) > 0 {
+		best := checked[0]
+		for _, candidate := range checked[1:] {
+			if betterCheckedNode(candidate, best) {
+				best = candidate
+			}
+		}
+		return best, true
+	}
+	return m.cfg.Nodes.BestByRegion(region, avoidID)
+}
+
+func betterCheckedNode(a, b node.Node) bool {
+	if a.LatencyMS != b.LatencyMS {
+		return a.LatencyMS < b.LatencyMS
+	}
+	return a.Speed > b.Speed
 }
 
 func (m *Manager) findNode(id string) (node.Node, bool) {

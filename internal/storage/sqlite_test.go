@@ -86,6 +86,9 @@ func TestSQLiteStoreReplacesAndListsNodes(t *testing.T) {
 	if got[0].OpenVPN != "client\n" || got[0].PurityScore != 90 {
 		t.Fatalf("node fields not round-tripped: %+v", got[0])
 	}
+	if got[0].LatencyMS != 0 {
+		t.Fatalf("cached latency = %d, want 0 because latency is realtime only", got[0].LatencyMS)
+	}
 	if got[0].ProbeStatus != "" || got[0].ProbeMessage != "" {
 		t.Fatalf("probe fields should stay realtime and not be cached: %+v", got[0])
 	}

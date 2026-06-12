@@ -135,10 +135,12 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	nodes.Replace(loadedNodes)
 
 	tracker := connection.NewTracker()
+	checker := nodecheck.Checker{Timeout: 3 * time.Second}
 	manager := channel.NewManager(channel.Config{
 		Channels:      channels,
 		Nodes:         nodes,
 		TunnelFactory: tunnelFactory(cfg),
+		NodeChecker:   checker.Check,
 		DataDir:       cfg.DataDir,
 		OpenVPNCmd:    cfg.OpenVPNCommand,
 	})

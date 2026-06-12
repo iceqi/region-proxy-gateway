@@ -244,7 +244,7 @@ const indexHTML = `<!doctype html>
             { title: '地区', key: 'region', width: 110, customRender: ({ record }) => h('div', [h('div', this.regionText(record.region, record.country)), h('div', { class: 'muted' }, record.location || record.country || '')]) },
             { title: '主机 / IP', key: 'host', width: 220, customRender: ({ record }) => h('div', { class: 'host-cell' }, [h('span', { class: 'mono' }, record.hostname || '-'), h('span', { class: 'mono' }, record.ip || '-')]) },
             { title: '协议', key: 'proto', width: 92, customRender: ({ record }) => (record.proto || 'udp') + ':' + (record.port || 1194) },
-            { title: '延迟', key: 'latency', width: 92, sorter: (a, b) => Number(a.latency_ms || 999999) - Number(b.latency_ms || 999999), customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '-' },
+            { title: '实时延迟', key: 'latency', width: 106, sorter: (a, b) => Number(a.latency_ms || 999999) - Number(b.latency_ms || 999999), customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '未测' },
             { title: '类型', key: 'type', width: 118, customRender: ({ record }) => h(antd.Tag, { color: this.ipTypeColor(record.ip_type) }, () => this.ipTypeText(record.ip_type) || '未知') },
             { title: '纯净度', key: 'purity', width: 122, sorter: (a, b) => Number(b.purity_score || 0) - Number(a.purity_score || 0), customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => (record.purity_score ? record.purity_score + '/100 ' : '未知 ') + this.qualityText(record.quality)) },
             { title: 'ASN / 运营商', key: 'owner', width: 190, customRender: ({ record }) => h('div', [h('div', record.owner || '-'), h('div', { class: 'muted' }, record.asn || record.as_name || '')]) },
@@ -269,7 +269,7 @@ const indexHTML = `<!doctype html>
           ],
           switchNodeColumns: [
             { title: '节点', key: 'node', customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.id), h('div', { class: 'muted' }, record.ip || record.hostname || '-')]) },
-            { title: '延迟', key: 'latency', width: 92, customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '-' },
+            { title: '实时延迟', key: 'latency', width: 106, customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '未测' },
             { title: '类型', key: 'type', width: 118, customRender: ({ record }) => h(antd.Tag, { color: this.ipTypeColor(record.ip_type) }, () => this.ipTypeText(record.ip_type) || '未知') },
             { title: '纯净度', key: 'purity', width: 110, customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => record.purity_score ? record.purity_score + '/100' : '未知') },
             { title: '运营商', key: 'owner', customRender: ({ record }) => record.owner || '-' }
@@ -556,6 +556,8 @@ const indexHTML = `<!doctype html>
           return text
             .replace('ping ok; udp port cannot be fully verified without vpn handshake', 'Ping 正常；UDP 端口需建立 VPN 后才能完全确认')
             .replace('ping ok; tcp port ok', 'Ping 正常；TCP 端口可连接')
+            .replace('tcp port ok', 'TCP 端口可连接')
+            .replace('ping failed; udp cannot be verified without vpn handshake:', 'Ping 失败；UDP 节点需建立 VPN 才能完全确认：')
             .replace('ping failed:', 'Ping 失败：')
             .replace('tcp connect failed:', 'TCP 连接失败：')
             .replace('missing host', '缺少主机或 IP');
