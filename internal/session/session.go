@@ -21,12 +21,18 @@ type Session struct {
 	Tunnel     tunnel.Tunnel     `json:"-"`
 }
 
+type managedSession struct {
+	mu        sync.Mutex
+	session   Session
+	switching bool
+}
+
 type Manager struct {
 	mu         sync.RWMutex
 	nodes      *node.Store
 	maxActive  int
 	factory    Factory
-	sessions   map[string]*Session
+	sessions   map[string]*managedSession
 	creating   map[string]struct{}
 	nextDevice int
 }
@@ -36,27 +42,29 @@ func NewManager(nodes *node.Store, maxActive int, factory Factory) *Manager {
 		nodes:     nodes,
 		maxActive: maxActive,
 		factory:   factory,
-		sessions:  make(map[string]*Session),
+		sessions:  make(map[string]*managedSession),
 		creating:  make(map[string]struct{}),
 	}
 }
 
-func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (*Session, error) {
+func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (Session, error) {
 	key := strat.Key()
 
 	m.mu.Lock()
-	if sess, ok := m.sessions[key]; ok {
-		sess.LastUsedAt = time.Now()
+	if entry, ok := m.sessions[key]; ok {
 		m.mu.Unlock()
-		return sess, nil
+		entry.mu.Lock()
+		defer entry.mu.Unlock()
+		entry.session.LastUsedAt = time.Now()
+		return entry.session, nil
 	}
 	if _, ok := m.creating[key]; ok {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("session %q is already being created", key)
+		return Session{}, fmt.Errorf("session %q is already being created", key)
 	}
-	if m.maxActive > 0 && len(m.sessions) >= m.maxActive {
+	if m.maxActive > 0 && len(m.sessions)+len(m.creating) >= m.maxActive {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("max active sessions reached")
+		return Session{}, fmt.Errorf("max active sessions reached")
 	}
 	device := deviceName(m.nextDevice)
 	m.nextDevice++
@@ -71,19 +79,19 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (*Se
 
 	selected, ok := m.nodes.BestByRegion(strat.Region, "")
 	if !ok {
-		return nil, fmt.Errorf("no available node for region %q", strat.Region)
+		return Session{}, fmt.Errorf("no available node for region %q", strat.Region)
 	}
 
 	tun := m.factory(key)
 	if tun == nil {
-		return nil, fmt.Errorf("session tunnel factory returned nil for %q", key)
+		return Session{}, fmt.Errorf("session tunnel factory returned nil for %q", key)
 	}
 	if err := tun.Start(ctx, selected, tunnel.Options{Name: key, DeviceName: device}); err != nil {
-		return nil, fmt.Errorf("start tunnel for %q: %w", key, err)
+		return Session{}, fmt.Errorf("start tunnel for %q: %w", key, err)
 	}
 
 	now := time.Now()
-	sess := &Session{
+	sess := Session{
 		Strategy:   strat,
 		Node:       selected,
 		CreatedAt:  now,
@@ -94,24 +102,39 @@ func (m *Manager) GetOrCreate(ctx context.Context, strat strategy.Strategy) (*Se
 	defer m.mu.Unlock()
 	if existing, ok := m.sessions[key]; ok {
 		_ = tun.Stop(context.Background())
-		existing.LastUsedAt = time.Now()
-		return existing, nil
+		existing.mu.Lock()
+		defer existing.mu.Unlock()
+		existing.session.LastUsedAt = time.Now()
+		return existing.session, nil
 	}
-	m.sessions[key] = sess
+	m.sessions[key] = &managedSession{session: sess}
 	return sess, nil
 }
 
 func (m *Manager) SwitchNow(ctx context.Context, key string) error {
-	m.mu.Lock()
-	sess, ok := m.sessions[key]
+	m.mu.RLock()
+	entry, ok := m.sessions[key]
+	m.mu.RUnlock()
 	if !ok {
-		m.mu.Unlock()
 		return fmt.Errorf("session %q not found", key)
 	}
-	currentNode := sess.Node
-	region := sess.Strategy.Region
-	tun := sess.Tunnel
-	m.mu.Unlock()
+
+	entry.mu.Lock()
+	if entry.switching {
+		entry.mu.Unlock()
+		return fmt.Errorf("session %q is already switching", key)
+	}
+	entry.switching = true
+	currentNode := entry.session.Node
+	region := entry.session.Strategy.Region
+	tun := entry.session.Tunnel
+	entry.mu.Unlock()
+
+	defer func() {
+		entry.mu.Lock()
+		entry.switching = false
+		entry.mu.Unlock()
+	}()
 
 	next, ok := m.nodes.BestByRegion(region, currentNode.ID)
 	if !ok {
@@ -124,24 +147,26 @@ func (m *Manager) SwitchNow(ctx context.Context, key string) error {
 		return fmt.Errorf("switch tunnel for %q: %w", key, err)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	sess, ok = m.sessions[key]
-	if !ok {
-		return fmt.Errorf("session %q not found after switch", key)
-	}
-	sess.Node = next
-	sess.LastUsedAt = time.Now()
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	entry.session.Node = next
+	entry.session.LastUsedAt = time.Now()
 	return nil
 }
 
 func (m *Manager) List() []Session {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	entries := make([]*managedSession, 0, len(m.sessions))
+	for _, entry := range m.sessions {
+		entries = append(entries, entry)
+	}
+	m.mu.RUnlock()
 
-	sessions := make([]Session, 0, len(m.sessions))
-	for _, sess := range m.sessions {
-		sessions = append(sessions, *sess)
+	sessions := make([]Session, 0, len(entries))
+	for _, entry := range entries {
+		entry.mu.Lock()
+		sessions = append(sessions, entry.session)
+		entry.mu.Unlock()
 	}
 	return sessions
 }
