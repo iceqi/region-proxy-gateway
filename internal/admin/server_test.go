@@ -234,6 +234,11 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value"} {
+		if !strings.Contains(rec.Body.String(), text) {
+			t.Fatalf("admin html missing layout safeguard %q", text)
+		}
+	}
 }
 
 func TestIndexRedirectsToTrailingSlash(t *testing.T) {

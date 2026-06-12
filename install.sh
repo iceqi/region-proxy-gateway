@@ -96,6 +96,8 @@ clone_or_update() {
 build_binary() {
   log "building binary"
   cd "${INSTALL_DIR}"
+  export GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}"
+  export GOSUMDB="${GOSUMDB:-sum.golang.org}"
   go build -o region-proxy-gateway ./cmd/region-proxy-gateway
 }
 

@@ -94,6 +94,12 @@ data/region-proxy-gateway.db
 bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/main/install.sh)
 ```
 
+如果构建时下载 Go 依赖很慢，可以临时指定 Go 代理：
+
+```bash
+GOPROXY=https://goproxy.cn,direct bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/main/install.sh)
+```
+
 脚本会自动完成：
 
 - 安装 OpenVPN、Go、git、jq、SQLite 编译依赖等。
