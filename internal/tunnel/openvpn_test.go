@@ -2,10 +2,14 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 )
@@ -68,6 +72,9 @@ func TestOpenVPNTunnelStartWritesConfigAndStartsProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
 
 	configPath := filepath.Join(dir, "sessions", "jp-10", "client.ovpn")
 	raw, err := os.ReadFile(configPath)
@@ -87,6 +94,39 @@ func TestOpenVPNTunnelStartWritesConfigAndStartsProcess(t *testing.T) {
 	status := tun.Status()
 	if !status.Ready || status.NodeID != "jp-1" || status.Name != "jp-10" || status.PID != 1234 {
 		t.Fatalf("status = %+v, want ready jp-1 pid 1234", status)
+	}
+}
+
+func TestExecOpenVPNProcessStarterDoesNotBindProcessLifetimeToStartContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	process, err := (ExecOpenVPNProcessStarter{}).Start(ctx, []string{"/bin/sh", "-c", "sleep 5"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- process.Wait()
+	}()
+	exited := false
+	t.Cleanup(func() {
+		if exited {
+			return
+		}
+		_ = process.Kill()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("process did not exit during cleanup")
+		}
+	})
+
+	cancel()
+
+	select {
+	case err := <-done:
+		exited = true
+		t.Fatalf("process exited after start context cancel: %v", err)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
@@ -125,15 +165,70 @@ func TestOpenVPNTunnelStopTerminatesProcess(t *testing.T) {
 	if err := tun.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop returned error: %v", err)
 	}
-	if !process.terminated {
+	if !process.terminated.Load() {
 		t.Fatalf("expected process to be terminated")
 	}
-	if !process.waited {
+	if !process.waited.Load() {
 		t.Fatalf("expected process to be waited")
 	}
 	if tun.Status().Ready {
 		t.Fatalf("expected status not ready after stop")
 	}
+}
+
+func TestOpenVPNTunnelMonitorsUnexpectedProcessExit(t *testing.T) {
+	process := &recordingProcess{waitCh: make(chan error, 1)}
+	starter := &singleProcessStarter{process: process}
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: starter})
+	err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-10"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	waitFor(t, func() bool { return process.waitCalls.Load() == 1 }, "monitor to call Wait")
+	process.waitCh <- errors.New("openvpn exited with status 1")
+
+	waitFor(t, func() bool {
+		status := tun.Status()
+		return !status.Ready && status.PID == 0 && strings.Contains(status.Error, "openvpn exited with status 1")
+	}, "status to reflect process exit")
+}
+
+func TestOpenVPNTunnelStopKillsAndReturnsWhenWaitDoesNotComplete(t *testing.T) {
+	waitCh := make(chan error)
+	process := &recordingProcess{waitCh: waitCh}
+	starter := &singleProcessStarter{process: process}
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir:     t.TempDir(),
+		Starter:     starter,
+		StopTimeout: 10 * time.Millisecond,
+	})
+	err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-10"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- tun.Stop(context.Background())
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "timed out waiting for openvpn process to exit after kill") {
+			t.Fatalf("Stop error = %v, want bounded wait timeout", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		close(waitCh)
+		t.Fatalf("Stop did not return after timeout and kill")
+	}
+	if !process.terminated.Load() {
+		t.Fatalf("expected process to be terminated")
+	}
+	if !process.killed.Load() {
+		t.Fatalf("expected process to be killed after wait timeout")
+	}
+	close(waitCh)
 }
 
 func TestOpenVPNTunnelSwitchRestartsWithNewNode(t *testing.T) {
@@ -150,8 +245,11 @@ func TestOpenVPNTunnelSwitchRestartsWithNewNode(t *testing.T) {
 	if err := tun.Switch(context.Background(), second); err != nil {
 		t.Fatalf("Switch returned error: %v", err)
 	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
 
-	if !firstProcess.terminated || !firstProcess.waited {
+	if !firstProcess.terminated.Load() || !firstProcess.waited.Load() {
 		t.Fatalf("expected first process to be stopped before switch")
 	}
 	if len(starter.commands) != 2 {
@@ -183,22 +281,33 @@ func (s *recordingProcessStarter) Start(ctx context.Context, command []string) (
 }
 
 type recordingProcess struct {
-	terminated bool
-	killed     bool
-	waited     bool
+	terminated atomic.Bool
+	killed     atomic.Bool
+	waited     atomic.Bool
+	waitCalls  atomic.Int32
+	waitCh     chan error
 }
 
 func (p *recordingProcess) PID() int { return 1234 }
 func (p *recordingProcess) Wait() error {
-	p.waited = true
-	return nil
+	p.waited.Store(true)
+	p.waitCalls.Add(1)
+	if p.waitCh != nil {
+		return <-p.waitCh
+	}
+	for {
+		if p.terminated.Load() || p.killed.Load() {
+			return nil
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 func (p *recordingProcess) Terminate() error {
-	p.terminated = true
+	p.terminated.Store(true)
 	return nil
 }
 func (p *recordingProcess) Kill() error {
-	p.killed = true
+	p.killed.Store(true)
 	return nil
 }
 
@@ -208,4 +317,16 @@ type singleProcessStarter struct {
 
 func (s *singleProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
 	return s.process, nil
+}
+
+func waitFor(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
 }

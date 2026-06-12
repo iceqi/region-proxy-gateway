@@ -30,7 +30,10 @@ func (ExecOpenVPNProcessStarter) Start(ctx context.Context, command []string) (O
 	if len(command) == 0 {
 		return nil, fmt.Errorf("openvpn command is empty")
 	}
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
@@ -106,6 +109,8 @@ type OpenVPN struct {
 	cfg         OpenVPNConfig
 	status      Status
 	process     OpenVPNProcess
+	monitorDone chan error
+	stopping    bool
 	options     Options
 	configPath  string
 	startedNode node.Node
@@ -159,45 +164,64 @@ func (o *OpenVPN) Start(ctx context.Context, n node.Node, opts Options) error {
 	}
 
 	o.process = process
+	o.monitorDone = make(chan error, 1)
+	o.stopping = false
 	o.options = opts
 	o.configPath = configPath
 	o.startedNode = n
 	o.status = Status{Name: opts.Name, NodeID: n.ID, Ready: true, StartedAt: time.Now(), PID: process.PID()}
+	go o.monitorProcess(process, o.monitorDone)
 	return nil
 }
 
 func (o *OpenVPN) Stop(ctx context.Context) error {
 	o.mu.Lock()
 	process := o.process
+	done := o.monitorDone
 	if process == nil {
 		o.status.Ready = false
 		o.status.PID = 0
 		o.mu.Unlock()
 		return nil
 	}
-	o.process = nil
 	o.status.Ready = false
 	o.status.PID = 0
+	o.stopping = true
 	o.mu.Unlock()
 
 	_ = process.Terminate()
-	done := make(chan error, 1)
-	go func() {
-		done <- process.Wait()
-	}()
 
 	timer := time.NewTimer(o.cfg.StopTimeout)
 	defer timer.Stop()
 
+	var err error
 	select {
-	case err := <-done:
+	case err = <-done:
+		o.finishStop()
 		return err
 	case <-ctx.Done():
 		_ = process.Kill()
-		return ctx.Err()
+		err = ctx.Err()
 	case <-timer.C:
 		_ = process.Kill()
-		return <-done
+	}
+
+	killTimer := time.NewTimer(100 * time.Millisecond)
+	defer killTimer.Stop()
+
+	select {
+	case waitErr := <-done:
+		o.finishStop()
+		if err != nil {
+			return err
+		}
+		return waitErr
+	case <-killTimer.C:
+		o.finishStop()
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("timed out waiting for openvpn process to exit after kill")
 	}
 }
 
@@ -225,6 +249,39 @@ func (o *OpenVPN) Status() Status {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	return o.status
+}
+
+func (o *OpenVPN) monitorProcess(process OpenVPNProcess, done chan<- error) {
+	err := process.Wait()
+
+	o.mu.Lock()
+	expected := o.stopping && o.process == process
+	if o.process == process {
+		o.process = nil
+		o.monitorDone = nil
+		o.status.Ready = false
+		o.status.PID = 0
+		if !expected {
+			if err != nil {
+				o.status.Error = err.Error()
+			} else {
+				o.status.Error = "openvpn process exited"
+			}
+		}
+	}
+	o.mu.Unlock()
+
+	done <- err
+}
+
+func (o *OpenVPN) finishStop() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.process = nil
+	o.monitorDone = nil
+	o.stopping = false
+	o.status.Ready = false
+	o.status.PID = 0
 }
 
 func (o *OpenVPN) setError(err error) {
