@@ -64,7 +64,16 @@ else
   echo "systemd not found. Run manually with: ${INSTALL_DIR}/region-proxy-gateway"
 fi
 
-echo "Admin: http://127.0.0.1:8787"
+ADMIN_PORT=""
+if [[ -f "${INSTALL_DIR}/data/config.json" ]]; then
+  ADMIN_PORT="$(grep -m1 '"admin_port"' "${INSTALL_DIR}/data/config.json" | sed -E 's/[^0-9]*([0-9]+).*/\1/' || true)"
+fi
+
+if [[ -n "${ADMIN_PORT}" ]]; then
+  echo "Admin: http://127.0.0.1:${ADMIN_PORT}"
+else
+  echo "Admin: see ${INSTALL_DIR}/data/config.json"
+fi
 echo "Config: ${INSTALL_DIR}/data/config.json"
 echo "HTTP proxy example: http://proxy:change-me-proxy@SERVER_IP:3000"
 echo "SOCKS5 proxy example: socks5://proxy:change-me-proxy@SERVER_IP:3000"

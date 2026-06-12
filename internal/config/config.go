@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"math/big"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,10 +79,60 @@ func LoadOrCreate(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg = Default()
+	cfg.AdminPort = chooseAdminPort(cfg.AdminHost, cfg.AdminPort, usedChannelPorts(cfg.Channels))
 	if err := Save(path, cfg); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func chooseAdminPort(host string, fallback int, blocked map[int]struct{}) int {
+	if isPortFree(host, fallback) {
+		if _, ok := blocked[fallback]; !ok {
+			return fallback
+		}
+	}
+	for i := 0; i < 100; i++ {
+		port := randomPort(20000, 60999)
+		if _, ok := blocked[port]; ok {
+			continue
+		}
+		if isPortFree(host, port) {
+			return port
+		}
+	}
+	return fallback
+}
+
+func usedChannelPorts(channels []Channel) map[int]struct{} {
+	ports := make(map[int]struct{}, len(channels))
+	for _, ch := range channels {
+		ports[ch.ListenPort] = struct{}{}
+	}
+	return ports
+}
+
+func randomPort(min, max int) int {
+	if max <= min {
+		return min
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return min
+	}
+	return min + int(n.Int64())
+}
+
+func isPortFree(host string, port int) bool {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
 }
 
 func Load(path string) (Config, error) {

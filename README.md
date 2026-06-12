@@ -23,6 +23,7 @@
 - 管理面板查看通道、节点、在线连接。
 - Fake backend 本地测试。
 - OpenVPN backend 进程生命周期。
+- Linux 下 OpenVPN 出站 socket 绑定到通道设备，如 `rpg0`、`rpg1`。
 
 ## 节点来源
 
@@ -47,7 +48,7 @@ data/config.json
 ```json
 {
   "admin_host": "127.0.0.1",
-  "admin_port": 8787,
+  "admin_port": 28765,
   "admin_username": "admin",
   "admin_password": "change-me-admin",
   "proxy_username": "proxy",
@@ -93,10 +94,10 @@ socks5://proxy:change-me-proxy@1.2.3.4:3000
 
 ## 管理面板
 
-默认地址：
+首次生成配置时，管理端口会自动选择一个随机未占用的高位端口。实际地址以 `data/config.json` 里的 `admin_port` 为准。
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:<admin_port>
 ```
 
 当前面板支持查看：
@@ -112,7 +113,7 @@ http://127.0.0.1:8787
 
 `fake` backend 可以直接跑通本地测试。
 
-`openvpn` backend 可以启动 OpenVPN 进程，但每个代理端口的流量要稳定走各自 VPN 出口，还需要 Linux 上的设备绑定拨号或策略路由接入。这个项目已经把多通道结构收窄好了，下一步就是补这块真实出站路由。
+`openvpn` backend 在 Linux 下会把出站 TCP socket 绑定到通道对应的 tun 设备，例如 `rpg0`、`rpg1`。运行时需要 root 或具备 `SO_BINDTODEVICE` 所需权限。非 Linux 系统会返回明确的不支持错误。
 
 ## Build
 

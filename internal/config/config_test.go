@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net"
 	"path/filepath"
 	"testing"
 )
@@ -102,5 +103,24 @@ func TestLoadOrCreateWritesDefaultAndRoundTrips(t *testing.T) {
 	}
 	if loaded.Channels[0].RotateMinutes != 10 {
 		t.Fatalf("rotate minutes = %d, want 10", loaded.Channels[0].RotateMinutes)
+	}
+}
+
+func TestLoadOrCreateChoosesRandomFreeAdminPortWhenDefaultIsBusy(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:8787")
+	if err != nil {
+		t.Skipf("default admin port already busy: %v", err)
+	}
+	defer listener.Close()
+
+	cfg, err := LoadOrCreate(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatalf("LoadOrCreate: %v", err)
+	}
+	if cfg.AdminPort == 8787 {
+		t.Fatalf("admin port = 8787, want a random free port")
+	}
+	if cfg.AdminPort < 20000 || cfg.AdminPort > 60999 {
+		t.Fatalf("admin port = %d, want random high port", cfg.AdminPort)
 	}
 }

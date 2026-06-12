@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -142,14 +143,40 @@ func TestOpenVPNTunnelStartRejectsMissingConfig(t *testing.T) {
 	}
 }
 
-func TestOpenVPNTunnelDialReturnsRoutingError(t *testing.T) {
+func TestOpenVPNTunnelDialBindsToStartedDevice(t *testing.T) {
+	dialer := &recordingDeviceDialer{conn: &dummyConn{}}
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir:      t.TempDir(),
+		Starter:      &recordingProcessStarter{},
+		DeviceDialer: dialer,
+	})
+	if err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-3000", DeviceName: "rpg7"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
+
+	conn, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("DialContext returned error: %v", err)
+	}
+	if conn != dialer.conn {
+		t.Fatalf("conn = %#v, want injected conn", conn)
+	}
+	if dialer.deviceName != "rpg7" {
+		t.Fatalf("device = %q, want rpg7", dialer.deviceName)
+	}
+	if dialer.network != "tcp" || dialer.address != "example.com:443" {
+		t.Fatalf("dial target = %s %s, want tcp example.com:443", dialer.network, dialer.address)
+	}
+}
+
+func TestOpenVPNTunnelDialRequiresStartedTunnel(t *testing.T) {
 	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: &recordingProcessStarter{}})
 	_, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
-	if err == nil {
-		t.Fatalf("expected routing isolation error")
-	}
-	if got := err.Error(); got != "openvpn dial requires routing isolation / namespace not implemented" {
-		t.Fatalf("DialContext error = %q, want routing isolation error", got)
+	if err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("DialContext error = %v, want not ready", err)
 	}
 }
 
@@ -318,6 +345,31 @@ type singleProcessStarter struct {
 func (s *singleProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
 	return s.process, nil
 }
+
+type recordingDeviceDialer struct {
+	conn       net.Conn
+	deviceName string
+	network    string
+	address    string
+}
+
+func (d *recordingDeviceDialer) DialContext(ctx context.Context, deviceName, network, address string) (net.Conn, error) {
+	d.deviceName = deviceName
+	d.network = network
+	d.address = address
+	return d.conn, nil
+}
+
+type dummyConn struct{}
+
+func (dummyConn) Read(b []byte) (int, error)         { return 0, errors.New("not implemented") }
+func (dummyConn) Write(b []byte) (int, error)        { return 0, errors.New("not implemented") }
+func (dummyConn) Close() error                       { return nil }
+func (dummyConn) LocalAddr() net.Addr                { return nil }
+func (dummyConn) RemoteAddr() net.Addr               { return nil }
+func (dummyConn) SetDeadline(t time.Time) error      { return nil }
+func (dummyConn) SetReadDeadline(t time.Time) error  { return nil }
+func (dummyConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func waitFor(t *testing.T, condition func() bool, description string) {
 	t.Helper()

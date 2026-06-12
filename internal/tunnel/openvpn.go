@@ -98,10 +98,11 @@ func OpenVPNCommand(binary string, configPath string, deviceName string) []strin
 }
 
 type OpenVPNConfig struct {
-	DataDir     string
-	Command     string
-	Starter     OpenVPNProcessStarter
-	StopTimeout time.Duration
+	DataDir      string
+	Command      string
+	Starter      OpenVPNProcessStarter
+	DeviceDialer DeviceDialer
+	StopTimeout  time.Duration
 }
 
 type OpenVPN struct {
@@ -119,6 +120,9 @@ type OpenVPN struct {
 func NewOpenVPN(cfg OpenVPNConfig) *OpenVPN {
 	if cfg.Starter == nil {
 		cfg.Starter = ExecOpenVPNProcessStarter{}
+	}
+	if cfg.DeviceDialer == nil {
+		cfg.DeviceDialer = SystemDeviceDialer{}
 	}
 	if cfg.StopTimeout == 0 {
 		cfg.StopTimeout = 5 * time.Second
@@ -242,7 +246,19 @@ func (o *OpenVPN) Switch(ctx context.Context, n node.Node) error {
 }
 
 func (o *OpenVPN) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return nil, fmt.Errorf("openvpn dial requires routing isolation / namespace not implemented")
+	o.mu.RLock()
+	ready := o.status.Ready
+	deviceName := o.options.DeviceName
+	dialer := o.cfg.DeviceDialer
+	o.mu.RUnlock()
+
+	if !ready {
+		return nil, fmt.Errorf("openvpn tunnel is not ready")
+	}
+	if deviceName == "" {
+		return nil, fmt.Errorf("openvpn tunnel has no device name")
+	}
+	return dialer.DialContext(ctx, deviceName, network, address)
 }
 
 func (o *OpenVPN) Status() Status {
