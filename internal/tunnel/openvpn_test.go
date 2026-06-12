@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -33,4 +34,43 @@ func TestOpenVPNCommandDefaultsBinary(t *testing.T) {
 	if got[0] != "openvpn" {
 		t.Fatalf("OpenVPNCommand()[0] = %q, want openvpn", got[0])
 	}
+}
+
+func TestOpenVPNProcessStarterReceivesCommand(t *testing.T) {
+	starter := &recordingProcessStarter{}
+	process, err := starter.Start(context.Background(), []string{"openvpn", "--config", "/tmp/client.ovpn"})
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	if process == nil {
+		t.Fatal("expected process")
+	}
+	if len(starter.commands) != 1 || starter.commands[0][0] != "openvpn" {
+		t.Fatalf("commands = %#v, want openvpn command", starter.commands)
+	}
+}
+
+type recordingProcessStarter struct {
+	commands [][]string
+}
+
+func (s *recordingProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
+	s.commands = append(s.commands, append([]string(nil), command...))
+	return &recordingProcess{}, nil
+}
+
+type recordingProcess struct {
+	terminated bool
+	killed     bool
+}
+
+func (p *recordingProcess) PID() int    { return 1234 }
+func (p *recordingProcess) Wait() error { return nil }
+func (p *recordingProcess) Terminate() error {
+	p.terminated = true
+	return nil
+}
+func (p *recordingProcess) Kill() error {
+	p.killed = true
+	return nil
 }
