@@ -21,6 +21,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if len(cfg.Channels) != 1 {
 		t.Fatalf("default channels = %d, want 1", len(cfg.Channels))
 	}
+	if cfg.DatabasePath != "./data/region-proxy-gateway.db" {
+		t.Fatalf("DatabasePath = %q, want ./data/region-proxy-gateway.db", cfg.DatabasePath)
+	}
 	if cfg.Channels[0].ListenPort != 3000 {
 		t.Fatalf("default channel port = %d, want 3000", cfg.Channels[0].ListenPort)
 	}

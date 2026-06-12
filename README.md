@@ -54,13 +54,16 @@ http://ip-api.com/batch
 
 这个纯净度是基础风险判断，不等于付费风控库的最终结论。`ip.net.coffee` 可以当人工复核工具使用，但目前没有看到公开稳定的 API 文档，所以没有直接依赖它。
 
-## 配置文件
+## 配置和数据
 
 首次启动会生成：
 
 ```text
 data/config.json
+data/region-proxy-gateway.db
 ```
+
+`config.json` 保留站点级配置，方便手工修改；SQLite 数据库保存通道配置和 VPNGate 节点缓存。
 
 示例：
 
@@ -75,21 +78,13 @@ data/config.json
   "proxy_password": "change-me-proxy",
   "node_refresh_interval": "20m",
   "data_dir": "./data",
+  "database_path": "./data/region-proxy-gateway.db",
   "openvpn_command": "openvpn",
-  "tunnel_backend": "fake",
-  "channels": [
-    {
-      "id": "jp-3000",
-      "listen_host": "0.0.0.0",
-      "listen_port": 3000,
-      "region": "jp",
-      "rotate_minutes": 10,
-      "selection_mode": "auto",
-      "enabled": true
-    }
-  ]
+  "tunnel_backend": "fake"
 }
 ```
+
+旧版本 `config.json` 里的 `channels` 会在首次启动时迁移进 SQLite，并从 JSON 里清空；迁移后通道增删改由管理面板写入数据库。
 
 ## 一键安装
 
@@ -101,10 +96,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/m
 
 脚本会自动完成：
 
-- 安装 OpenVPN、Go、git、jq 等依赖。
+- 安装 OpenVPN、Go、git、jq、SQLite 编译依赖等。
 - 拉取或更新 `/opt/region-proxy-gateway`。
 - 编译二进制。
-- 生成 `data/config.json`。
+- 生成 `data/config.json` 和 `data/region-proxy-gateway.db`。
 - 管理面板监听 `0.0.0.0`，端口和 path 随机生成。
 - 管理密码、代理密码随机生成。
 - 默认启用 `openvpn` backend。
@@ -177,7 +172,7 @@ admin_password
 
 自动更新节点间隔由 `node_refresh_interval` 控制，比如 `20m`、`1h`。管理面板可以保存这个值，重启服务后生效。
 
-新增、编辑、删除通道会保存到 `data/config.json`。新增端口监听需要重启服务后生效：
+新增、编辑、删除通道会保存到 SQLite 数据库。新增端口监听需要重启服务后生效：
 
 ```bash
 systemctl restart region-proxy-gateway

@@ -24,14 +24,14 @@ install_packages() {
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y openvpn iproute2 iptables ca-certificates curl git golang-go jq
+    apt-get install -y openvpn iproute2 iptables ca-certificates curl git golang-go jq gcc libc6-dev libsqlite3-dev
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y openvpn iproute iptables ca-certificates curl git golang jq
+    dnf install -y openvpn iproute iptables ca-certificates curl git golang jq gcc sqlite-devel
   elif command -v yum >/dev/null 2>&1; then
     yum install -y epel-release || true
-    yum install -y openvpn iproute iptables ca-certificates curl git golang jq
+    yum install -y openvpn iproute iptables ca-certificates curl git golang jq gcc sqlite-devel
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache openvpn iproute2 iptables ca-certificates curl git go jq bash
+    apk add --no-cache openvpn iproute2 iptables ca-certificates curl git go jq bash gcc musl-dev sqlite-dev
   else
     echo "unsupported package manager"
     exit 1
@@ -123,6 +123,7 @@ write_or_patch_config() {
   "proxy_password": "${proxy_pass}",
   "node_refresh_interval": "20m",
   "data_dir": "${INSTALL_DIR}/data",
+  "database_path": "${INSTALL_DIR}/data/region-proxy-gateway.db",
   "openvpn_command": "openvpn",
   "tunnel_backend": "openvpn",
   "channels": [
@@ -150,6 +151,7 @@ EOF
 	new_proxy_pass="$(random_string 24)"
 	jq \
 		--arg data_dir "${INSTALL_DIR}/data" \
+		--arg database_path "${INSTALL_DIR}/data/region-proxy-gateway.db" \
 		--arg admin_path "${new_admin_path}" \
 		--arg admin_pass "${new_admin_pass}" \
 		--arg proxy_pass "${new_proxy_pass}" '
@@ -161,6 +163,7 @@ EOF
     .proxy_username = (if (.proxy_username == null or .proxy_username == "") then "proxy" else .proxy_username end) |
     .proxy_password = (if (.proxy_password == null or .proxy_password == "" or .proxy_password == "change-me-proxy") then $proxy_pass else .proxy_password end) |
     .data_dir = $data_dir |
+    .database_path = (.database_path // $database_path) |
     .openvpn_command = (.openvpn_command // "openvpn") |
     .tunnel_backend = "openvpn" |
     .node_refresh_interval = (.node_refresh_interval // "20m")

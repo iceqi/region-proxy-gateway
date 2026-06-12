@@ -30,6 +30,7 @@ type Config struct {
 	ProxyPassword       string    `json:"proxy_password"`
 	NodeRefreshInterval string    `json:"node_refresh_interval"`
 	DataDir             string    `json:"data_dir"`
+	DatabasePath        string    `json:"database_path"`
 	OpenVPNCommand      string    `json:"openvpn_command"`
 	TunnelBackend       string    `json:"tunnel_backend"`
 	Channels            []Channel `json:"channels"`
@@ -57,6 +58,7 @@ func Default() Config {
 		ProxyPassword:       "change-me-proxy",
 		NodeRefreshInterval: "20m",
 		DataDir:             "./data",
+		DatabasePath:        "./data/region-proxy-gateway.db",
 		OpenVPNCommand:      "openvpn",
 		TunnelBackend:       TunnelBackendFake,
 		Channels: []Channel{
@@ -205,6 +207,9 @@ func (c *Config) normalize() {
 	}
 	if c.DataDir == "" {
 		c.DataDir = "./data"
+	}
+	if c.DatabasePath == "" {
+		c.DatabasePath = filepath.Join(c.DataDir, "region-proxy-gateway.db")
 	}
 	if c.OpenVPNCommand == "" {
 		c.OpenVPNCommand = "openvpn"

@@ -13,6 +13,7 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
+	"github.com/iceqi/region-proxy-gateway/internal/storage"
 )
 
 type Server struct {
@@ -25,6 +26,7 @@ type Server struct {
 	configPath   string
 	config       config.Config
 	configMu     sync.Mutex
+	storage      *storage.Store
 	adminPath    string
 	adminUser    string
 	adminPass    string
@@ -64,6 +66,12 @@ func WithNodeRefresher(refresh func(context.Context) ([]node.Node, error)) Optio
 func WithNodeChecker(check func(context.Context, node.Node) node.Node) Option {
 	return func(s *Server) {
 		s.checkNode = check
+	}
+}
+
+func WithStorage(store *storage.Store) Option {
+	return func(s *Server) {
+		s.storage = store
 	}
 }
 
@@ -259,17 +267,13 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 		originalID = ch.ID
 	}
 	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
-		replaced := false
-		for i := range cfg.Channels {
-			if cfg.Channels[i].ID == originalID {
-				cfg.Channels[i] = ch
-				replaced = true
-				break
+		if s.storage != nil {
+			if err := s.storage.SaveChannel(r.Context(), originalID, ch); err != nil {
+				return cfg, err
 			}
+			return cfg, nil
 		}
-		if !replaced {
-			cfg.Channels = append(cfg.Channels, ch)
-		}
+		cfg.Channels = saveChannelInConfig(cfg.Channels, originalID, ch)
 		return cfg, nil
 	})
 	if err != nil {
@@ -356,19 +360,13 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
-		channels := make([]config.Channel, 0, len(cfg.Channels))
-		found := false
-		for _, ch := range cfg.Channels {
-			if ch.ID == channelID {
-				found = true
-				continue
+		if s.storage != nil {
+			if err := s.storage.DeleteChannel(r.Context(), channelID); err != nil {
+				return cfg, err
 			}
-			channels = append(channels, ch)
-		}
-		if !found {
 			return cfg, nil
 		}
-		cfg.Channels = channels
+		cfg.Channels = deleteChannelFromConfig(cfg.Channels, channelID)
 		return cfg, nil
 	})
 	if err != nil {
@@ -436,6 +434,12 @@ func (s *Server) channelViewList() []channelView {
 	configured := make([]config.Channel, len(s.config.Channels))
 	copy(configured, s.config.Channels)
 	s.configMu.Unlock()
+	if s.storage != nil {
+		channels, err := s.storage.ListChannels(context.Background())
+		if err == nil {
+			configured = channels
+		}
+	}
 
 	runtimeByID := make(map[string]channel.Snapshot)
 	for _, snapshot := range s.channelList() {
@@ -466,6 +470,31 @@ func (s *Server) channelViewList() []channelView {
 		views = append(views, view)
 	}
 	return views
+}
+
+func saveChannelInConfig(channels []config.Channel, originalID string, ch config.Channel) []config.Channel {
+	replaced := false
+	for i := range channels {
+		if channels[i].ID == originalID {
+			channels[i] = ch
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		channels = append(channels, ch)
+	}
+	return channels
+}
+
+func deleteChannelFromConfig(channels []config.Channel, channelID string) []config.Channel {
+	filtered := make([]config.Channel, 0, len(channels))
+	for _, ch := range channels {
+		if ch.ID != channelID {
+			filtered = append(filtered, ch)
+		}
+	}
+	return filtered
 }
 
 func snapshotFromConfig(ch config.Channel) channel.Snapshot {

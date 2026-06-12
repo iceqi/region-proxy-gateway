@@ -1,6 +1,9 @@
 /region-proxy-gateway
 /data/
 /dist/
+*.db
+*.db-shm
+*.db-wal
 *.log
 *.pid
 *.tmp

@@ -20,6 +20,7 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/nodecheck"
 	"github.com/iceqi/region-proxy-gateway/internal/proxy"
+	"github.com/iceqi/region-proxy-gateway/internal/storage"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 	"github.com/iceqi/region-proxy-gateway/internal/vpngate"
 )
@@ -31,6 +32,7 @@ type services struct {
 	nodes      *node.Store
 	channels   *channel.Manager
 	tracker    *connection.Tracker
+	storage    *storage.Store
 	proxies    []*proxy.Server
 	listeners  []net.Listener
 	configPath string
@@ -55,6 +57,7 @@ func main() {
 		log.Fatalf("build services: %v", err)
 	}
 	defer services.channels.Stop(ctx)
+	defer services.storage.Close()
 
 	for _, p := range services.proxies {
 		listener, err := net.Listen("tcp", p.ListenAddr)
@@ -92,16 +95,48 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		return services{}, err
 	}
 
-	nodes := node.NewStore()
-	loadedNodes, err := loadNodes(ctx, cfg)
+	database, err := storage.Open(cfg.DatabasePath)
 	if err != nil {
 		return services{}, err
+	}
+	if err := database.MigrateChannels(ctx, cfg.Channels); err != nil {
+		_ = database.Close()
+		return services{}, err
+	}
+	if cfgPath != "" && len(cfg.Channels) > 0 {
+		cfg.Channels = nil
+		if err := config.Save(cfgPath, cfg); err != nil {
+			_ = database.Close()
+			return services{}, err
+		}
+	}
+	channels, err := database.ListChannels(ctx)
+	if err != nil {
+		_ = database.Close()
+		return services{}, err
+	}
+
+	nodes := node.NewStore()
+	loadedNodes, err := database.ListNodes(ctx)
+	if err != nil {
+		_ = database.Close()
+		return services{}, err
+	}
+	if len(loadedNodes) == 0 {
+		loadedNodes, err = loadNodes(ctx, cfg)
+		if err != nil {
+			_ = database.Close()
+			return services{}, err
+		}
+		if err := database.ReplaceNodes(ctx, loadedNodes); err != nil {
+			log.Printf("cache nodes failed: %v", err)
+		}
 	}
 	nodes.Replace(loadedNodes)
 
 	tracker := connection.NewTracker()
 	manager := channel.NewManager(channel.Config{
-		Channels:      cfg.Channels,
+		Channels:      channels,
 		Nodes:         nodes,
 		TunnelFactory: tunnelFactory(cfg),
 		DataDir:       cfg.DataDir,
@@ -110,10 +145,10 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	if err := manager.Start(ctx); err != nil {
 		return services{}, err
 	}
-	startNodeUpdater(ctx, cfg, nodes)
+	startNodeUpdater(ctx, cfg, nodes, database)
 
-	proxies := make([]*proxy.Server, 0, len(cfg.Channels))
-	for _, ch := range cfg.Channels {
+	proxies := make([]*proxy.Server, 0, len(channels))
+	for _, ch := range channels {
 		if !ch.Enabled {
 			continue
 		}
@@ -124,8 +159,16 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	return services{
 		admin: admin.NewServer(manager, nodes, tracker,
 			admin.WithConfig(cfgPath, cfg),
+			admin.WithStorage(database),
 			admin.WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
-				return loadNodes(ctx, cfg)
+				nodes, err := loadNodes(ctx, cfg)
+				if err != nil {
+					return nil, err
+				}
+				if err := database.ReplaceNodes(ctx, nodes); err != nil {
+					log.Printf("cache refreshed nodes failed: %v", err)
+				}
+				return nodes, nil
 			}),
 			admin.WithNodeChecker(nodecheck.Checker{Timeout: 3 * time.Second}.Check),
 			admin.WithRestarter(func(ctx context.Context) error {
@@ -148,6 +191,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		nodes:      nodes,
 		channels:   manager,
 		tracker:    tracker,
+		storage:    database,
 		proxies:    proxies,
 		configPath: cfgPath,
 	}, nil
@@ -172,7 +216,7 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 	return enriched, nil
 }
 
-func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store) {
+func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store, database *storage.Store) {
 	if store == nil {
 		return
 	}
@@ -195,6 +239,11 @@ func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store)
 					continue
 				}
 				store.Replace(nodes)
+				if database != nil {
+					if err := database.ReplaceNodes(ctx, nodes); err != nil {
+						log.Printf("scheduled node cache failed: %v", err)
+					}
+				}
 				log.Printf("scheduled node update loaded %d nodes", len(nodes))
 			}
 		}

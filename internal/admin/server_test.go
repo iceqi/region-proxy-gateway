@@ -14,6 +14,7 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
+	"github.com/iceqi/region-proxy-gateway/internal/storage"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
 
@@ -420,6 +421,59 @@ func TestUpdateChannelCanRenameExistingConfig(t *testing.T) {
 	}
 }
 
+func TestChannelChangesUseSQLiteStorageWhenConfigured(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = nil
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	store := openAdminTestStore(t)
+	if err := store.SaveChannel(context.Background(), "", config.Channel{ID: "jp-3000", ListenHost: "0.0.0.0", ListenPort: 3000, Region: "jp", SelectionMode: config.SelectionAuto, Enabled: true}); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithStorage(store))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"original_id":"jp-3000","id":"jp-main","listen_host":"0.0.0.0","listen_port":3000,"region":"jp","rotate_minutes":7,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	channels, err := store.ListChannels(context.Background())
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	if len(channels) != 1 || channels[0].ID != "jp-main" || channels[0].RotateMinutes != 7 {
+		t.Fatalf("sqlite channels = %+v, want renamed jp-main", channels)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Channels) != 0 {
+		t.Fatalf("config channels = %+v, want sqlite to own channels", loaded.Channels)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/admin/api/channels/jp-main", nil)
+	deleteReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	deleteRec := httptest.NewRecorder()
+	server.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	channels, err = store.ListChannels(context.Background())
+	if err != nil {
+		t.Fatalf("ListChannels after delete: %v", err)
+	}
+	if len(channels) != 0 {
+		t.Fatalf("sqlite channels = %+v, want empty", channels)
+	}
+}
+
 func TestDeleteChannelPersistsConfig(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -539,4 +593,14 @@ func newAdminTestManager(t *testing.T) (*node.Store, *channel.Manager) {
 	}
 	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	return nodes, manager
+}
+
+func openAdminTestStore(t *testing.T) *storage.Store {
+	t.Helper()
+	store, err := storage.Open(filepath.Join(t.TempDir(), "region-proxy-gateway.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
