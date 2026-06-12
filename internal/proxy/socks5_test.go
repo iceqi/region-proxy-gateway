@@ -52,6 +52,53 @@ func TestSOCKS5ValidAuthAndDomainConnectSucceeds(t *testing.T) {
 	}
 }
 
+func TestSOCKS5ConnectSupportsIPv4AndIPv6(t *testing.T) {
+	tests := []struct {
+		name        string
+		writeTarget func(t *testing.T, conn net.Conn)
+		wantAddress string
+	}{
+		{
+			name: "ipv4",
+			writeTarget: func(t *testing.T, conn net.Conn) {
+				writeSOCKS5ConnectIPv4(t, conn, 0x01, net.IPv4(192, 0, 2, 10), 8080)
+			},
+			wantAddress: "192.0.2.10:8080",
+		},
+		{
+			name: "ipv6",
+			writeTarget: func(t *testing.T, conn net.Conn) {
+				writeSOCKS5ConnectIPv6(t, conn, 0x01, net.ParseIP("2001:db8::1"), 8443)
+			},
+			wantAddress: "[2001:db8::1]:8443",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tun := &fakeTunnel{dialResult: make(chan fakeDial, 1)}
+			provider := &fakeSessionProvider{sess: session.Session{Tunnel: tun}}
+			server := newHTTPTestServer(provider)
+			client, proxy := net.Pipe()
+			defer client.Close()
+			upstream, upstreamPeer := net.Pipe()
+			defer upstreamPeer.Close()
+			tun.dialResult <- fakeDial{conn: upstream}
+
+			go server.handleSOCKS5(proxy)
+
+			negotiateSOCKS5Auth(t, client, "jp-10", "secret", true)
+			tt.writeTarget(t, client)
+			assertSOCKS5Response(t, client, []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+			upstreamPeer.Close()
+
+			if tun.gotAddress != tt.wantAddress {
+				t.Fatalf("dial address = %q, want %q", tun.gotAddress, tt.wantAddress)
+			}
+		})
+	}
+}
+
 func TestSOCKS5InvalidPasswordIsRejected(t *testing.T) {
 	server := newHTTPTestServer(&fakeSessionProvider{})
 	client, proxy := net.Pipe()
@@ -159,6 +206,34 @@ func writeSOCKS5ConnectDomain(t *testing.T, conn net.Conn, command byte, host st
 	req = append(req, byte(port>>8), byte(port))
 	if _, err := conn.Write(req); err != nil {
 		t.Fatalf("write connect: %v", err)
+	}
+}
+
+func writeSOCKS5ConnectIPv4(t *testing.T, conn net.Conn, command byte, ip net.IP, port int) {
+	t.Helper()
+	raw := ip.To4()
+	if raw == nil {
+		t.Fatalf("invalid ipv4 %v", ip)
+	}
+	req := []byte{0x05, command, 0x00, 0x01}
+	req = append(req, raw...)
+	req = append(req, byte(port>>8), byte(port))
+	if _, err := conn.Write(req); err != nil {
+		t.Fatalf("write ipv4 connect: %v", err)
+	}
+}
+
+func writeSOCKS5ConnectIPv6(t *testing.T, conn net.Conn, command byte, ip net.IP, port int) {
+	t.Helper()
+	raw := ip.To16()
+	if raw == nil {
+		t.Fatalf("invalid ipv6 %v", ip)
+	}
+	req := []byte{0x05, command, 0x00, 0x04}
+	req = append(req, raw...)
+	req = append(req, byte(port>>8), byte(port))
+	if _, err := conn.Write(req); err != nil {
+		t.Fatalf("write ipv6 connect: %v", err)
 	}
 }
 
