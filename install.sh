@@ -29,16 +29,20 @@ install_packages() {
 
 install_packages
 
-mkdir -p "${INSTALL_DIR}"
-
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
   git -C "${INSTALL_DIR}" pull --ff-only
 else
   git clone "${REPO_URL}" "${INSTALL_DIR}"
 fi
 
+mkdir -p "${INSTALL_DIR}/data"
+
 cd "${INSTALL_DIR}"
 go build -o region-proxy-gateway ./cmd/region-proxy-gateway
+
+if [[ -f "${INSTALL_DIR}/data/nodes.example.json" && ! -f "${INSTALL_DIR}/data/nodes.json" ]]; then
+  cp "${INSTALL_DIR}/data/nodes.example.json" "${INSTALL_DIR}/data/nodes.json.example"
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
   cat >"${SERVICE_FILE}" <<EOF
@@ -64,6 +68,7 @@ else
   echo "systemd not found. Run manually with: ${INSTALL_DIR}/region-proxy-gateway"
 fi
 
-echo "Admin: http://SERVER_IP:8787"
+echo "Admin: http://127.0.0.1:8787"
 echo "HTTP proxy example: http://jp-10:PASSWORD@SERVER_IP:3000"
 echo "SOCKS5 proxy example: socks5://jp-10:PASSWORD@SERVER_IP:3000"
+echo "OpenVPN nodes example: ${INSTALL_DIR}/data/nodes.example.json"

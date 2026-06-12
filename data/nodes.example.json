@@ -1,0 +1,10 @@
+[
+  {
+    "id": "jp-example-1",
+    "region": "jp",
+    "country": "Japan",
+    "ip": "203.0.113.10",
+    "hostname": "vpn-jp.example.net",
+    "openvpn": "client\nremote vpn-jp.example.net 1194 udp\nroute-nopull\n"
+  }
+]
