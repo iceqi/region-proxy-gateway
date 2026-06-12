@@ -191,6 +191,19 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "window.location.hostname") {
 		t.Fatalf("admin html should generate proxy addresses from browser host")
 	}
+	for _, plugin := range []string{
+		"plugin/advancedFormat.js",
+		"plugin/customParseFormat.js",
+		"plugin/localeData.js",
+		"plugin/quarterOfYear.js",
+		"plugin/weekOfYear.js",
+		"plugin/weekYear.js",
+		"plugin/weekday.js",
+	} {
+		if !strings.Contains(rec.Body.String(), plugin) {
+			t.Fatalf("admin html missing dayjs plugin %s", plugin)
+		}
+	}
 }
 
 func TestIndexRedirectsToTrailingSlash(t *testing.T) {
