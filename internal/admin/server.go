@@ -241,19 +241,27 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
-	var ch config.Channel
-	if err := json.NewDecoder(r.Body).Decode(&ch); err != nil {
+	var body struct {
+		OriginalID string `json:"original_id"`
+		config.Channel
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
+	ch := body.Channel
 	if err := ch.Validate(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	originalID := strings.TrimSpace(body.OriginalID)
+	if originalID == "" {
+		originalID = ch.ID
+	}
 	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
 		replaced := false
 		for i := range cfg.Channels {
-			if cfg.Channels[i].ID == ch.ID {
+			if cfg.Channels[i].ID == originalID {
 				cfg.Channels[i] = ch
 				replaced = true
 				break
@@ -422,13 +430,34 @@ type channelView struct {
 }
 
 func (s *Server) channelViewList() []channelView {
-	snapshots := s.channelList()
-	views := make([]channelView, 0, len(snapshots))
 	s.configMu.Lock()
 	proxyUser := s.config.ProxyUsername
 	proxyPass := s.config.ProxyPassword
+	configured := make([]config.Channel, len(s.config.Channels))
+	copy(configured, s.config.Channels)
 	s.configMu.Unlock()
-	for _, snapshot := range snapshots {
+
+	runtimeByID := make(map[string]channel.Snapshot)
+	for _, snapshot := range s.channelList() {
+		runtimeByID[snapshot.ID] = snapshot
+	}
+
+	views := make([]channelView, 0, len(configured))
+	for _, ch := range configured {
+		snapshot, ok := runtimeByID[ch.ID]
+		if !ok {
+			snapshot = snapshotFromConfig(ch)
+		} else {
+			snapshot.ListenHost = ch.ListenHost
+			snapshot.ListenPort = ch.ListenPort
+			snapshot.Region = ch.Region
+			snapshot.RotateMinutes = ch.RotateMinutes
+			snapshot.SelectionMode = ch.SelectionMode
+			snapshot.ManualNodeID = ch.ManualNodeID
+			snapshot.Enabled = ch.Enabled
+			snapshot.ProxyURLHTTP = fmt.Sprintf("http://%s:%d", ch.ListenHost, ch.ListenPort)
+			snapshot.ProxyURLSOCKS5 = fmt.Sprintf("socks5://%s:%d", ch.ListenHost, ch.ListenPort)
+		}
 		view := channelView{Snapshot: snapshot}
 		if proxyUser != "" || proxyPass != "" {
 			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", proxyUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
@@ -437,6 +466,22 @@ func (s *Server) channelViewList() []channelView {
 		views = append(views, view)
 	}
 	return views
+}
+
+func snapshotFromConfig(ch config.Channel) channel.Snapshot {
+	return channel.Snapshot{
+		ID:             ch.ID,
+		ListenHost:     ch.ListenHost,
+		ListenPort:     ch.ListenPort,
+		Region:         ch.Region,
+		RotateMinutes:  ch.RotateMinutes,
+		SelectionMode:  ch.SelectionMode,
+		ManualNodeID:   ch.ManualNodeID,
+		Enabled:        ch.Enabled,
+		LastError:      "需要重启服务后生效",
+		ProxyURLHTTP:   fmt.Sprintf("http://%s:%d", ch.ListenHost, ch.ListenPort),
+		ProxyURLSOCKS5: fmt.Sprintf("socks5://%s:%d", ch.ListenHost, ch.ListenPort),
+	}
 }
 
 func (s *Server) connectionCount() int {

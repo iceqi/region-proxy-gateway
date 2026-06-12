@@ -18,35 +18,39 @@ const indexHTML = `<!doctype html>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/weekday.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ant-design-vue@4.2.6/dist/antd.min.js"></script>
   <style>
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f5f7fb; }
-    body { margin: 0; background: #f5f7fb; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #eef3f8; }
+    body { margin: 0; background: #eef3f8; }
     [v-cloak] { display: none; }
-    .shell { min-height: 100vh; }
-    .topbar { position: sticky; top: 0; z-index: 20; height: 60px; padding: 0 22px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e6eaf0; }
-    .brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-    .brand h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: 0; }
-    .brand span { color: #697386; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .page { max-width: 1480px; margin: 0 auto; padding: 18px; }
-    .stats { display: grid; grid-template-columns: repeat(5, minmax(140px, 1fr)); gap: 12px; margin-bottom: 14px; }
-    .stat { background: #fff; border: 1px solid #e6eaf0; border-radius: 8px; padding: 13px 14px; }
-    .stat-label { color: #697386; font-size: 12px; margin-bottom: 6px; }
-    .stat-value { font-size: 22px; font-weight: 700; }
-    .card { background: #fff; border: 1px solid #e6eaf0; border-radius: 8px; margin-bottom: 14px; }
-    .card-head { padding: 13px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #eef1f5; }
-    .card-title { font-size: 15px; font-weight: 700; }
-    .card-body { padding: 14px; }
+    .shell { min-height: 100vh; background: linear-gradient(180deg, #162233 0, #162233 220px, #eef3f8 220px); }
+    .topbar { position: sticky; top: 0; z-index: 20; min-height: 72px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: rgba(22,34,51,.96); border-bottom: 1px solid rgba(255,255,255,.08); box-shadow: 0 10px 28px rgba(18, 32, 52, .18); }
+    .brand { display: grid; gap: 4px; min-width: 0; color: #fff; }
+    .brand h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: 0; }
+    .brand span { color: #aebbd0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .page { max-width: 1520px; margin: 0 auto; padding: 24px; }
+    .stats { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    .stat { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; padding: 16px; box-shadow: 0 12px 28px rgba(23, 32, 51, .08); }
+    .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
+    .stat-value { font-size: 24px; font-weight: 760; color: #111827; }
+    .card { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; margin-bottom: 16px; box-shadow: 0 12px 28px rgba(23, 32, 51, .07); overflow: hidden; }
+    .card-head { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf1f6; background: #fbfcfe; }
+    .card-title { font-size: 16px; font-weight: 760; }
+    .card-body { padding: 18px; }
     .filter-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
     .muted { color: #697386; }
     .host-cell { display: grid; gap: 3px; overflow-wrap: anywhere; }
     .action-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-    .connection-box { display: grid; gap: 6px; }
-    .connection-line { display: grid; grid-template-columns: 58px 1fr auto; gap: 8px; align-items: center; }
-    .connection-line code { overflow-wrap: anywhere; white-space: normal; }
+    .connection-box { display: grid; gap: 8px; }
+    .connection-line { display: grid; grid-template-columns: 66px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid #e6ecf3; background: #f8fafc; border-radius: 8px; }
+    .connection-line code { overflow-wrap: anywhere; white-space: normal; color: #0f172a; }
     .modal-filter { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .ant-tabs-nav { margin-bottom: 14px !important; }
     .ant-table-cell { vertical-align: top; }
+    .ant-tabs-tab { font-weight: 650; }
+    .ant-table-wrapper .ant-table-thead > tr > th { background: #f6f8fb; font-weight: 700; color: #334155; }
+    .topbar .ant-btn-default { border-color: rgba(255,255,255,.25); background: rgba(255,255,255,.08); color: #fff; }
+    .topbar .ant-btn-default:hover { border-color: #8fb7ff; color: #fff; background: rgba(255,255,255,.14); }
     @media (max-width: 1100px) {
       .stats { grid-template-columns: 1fr 1fr; }
       .filter-grid, .modal-filter { grid-template-columns: 1fr 1fr; }
@@ -232,7 +236,7 @@ const indexHTML = `<!doctype html>
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
           channelForm: this.emptyChannelForm(),
-          channelDialog: { open: false, editing: false },
+          channelDialog: { open: false, editing: false, originalID: '' },
           nodeSwitchDialog: { open: false, node: null, channelID: undefined },
           channelSwitchDialog: { open: false, channel: null, nodeID: undefined },
           probing: {},
@@ -253,7 +257,7 @@ const indexHTML = `<!doctype html>
             { title: '地区', dataIndex: 'region', width: 110, customRender: ({ record }) => this.regionText(record.region) + '（' + record.region + '）' },
             { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
             { title: '当前节点', key: 'node', width: 220, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
-            { title: '连接方式', key: 'connect', width: 430, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
+            { title: '连接方式', key: 'connect', width: 500, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
             { title: '操作', key: 'actions', width: 230, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
           connectionColumns: [
@@ -383,6 +387,7 @@ const indexHTML = `<!doctype html>
         openChannelDialog(row) {
           this.channelDialog.open = true;
           this.channelDialog.editing = Boolean(row);
+          this.channelDialog.originalID = row ? row.id : '';
           this.channelForm = row ? {
             id: row.id,
             listen_host: row.listen_host,
@@ -395,7 +400,7 @@ const indexHTML = `<!doctype html>
           } : this.emptyChannelForm();
         },
         async saveChannel() {
-          const channel = Object.assign({}, this.channelForm, { region: String(this.channelForm.region || '').toLowerCase() });
+          const channel = Object.assign({}, this.channelForm, { region: String(this.channelForm.region || '').toLowerCase(), original_id: this.channelDialog.originalID });
           if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
           try {
             await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
@@ -474,7 +479,27 @@ const indexHTML = `<!doctype html>
         },
         copyText(text) {
           if (!text) return;
-          navigator.clipboard.writeText(text).then(() => message.success('已复制')).catch(() => message.warning('浏览器不允许自动复制'));
+          if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(() => message.success('已复制')).catch(() => this.copyTextFallback(text));
+            return;
+          }
+          this.copyTextFallback(text);
+        },
+        copyTextFallback(text) {
+          const input = document.createElement('textarea');
+          input.value = text;
+          input.setAttribute('readonly', '');
+          input.style.position = 'fixed';
+          input.style.left = '-9999px';
+          document.body.appendChild(input);
+          input.select();
+          try {
+            document.execCommand('copy') ? message.success('已复制') : message.warning('复制失败，请手动选中复制');
+          } catch (err) {
+            message.warning('复制失败，请手动选中复制');
+          } finally {
+            document.body.removeChild(input);
+          }
         },
         proxyAddress(channel, scheme) {
           const source = scheme === 'socks5'

@@ -257,10 +257,6 @@ func (c Config) Validate() error {
 	if _, err := ParseNodeRefreshInterval(c.NodeRefreshInterval); err != nil {
 		return err
 	}
-	if len(c.Channels) == 0 {
-		return fmt.Errorf("at least one channel is required")
-	}
-
 	ports := map[int]string{c.AdminPort: "admin"}
 	ids := map[string]struct{}{}
 	for _, ch := range c.Channels {

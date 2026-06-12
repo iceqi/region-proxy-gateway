@@ -74,7 +74,7 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	if body.Channels[0].ID != "jp-3000" {
 		t.Fatalf("channel id = %q, want jp-3000", body.Channels[0].ID)
 	}
-	if body.Channels[0].ProxyAuthHTTP != "http://alice:secret@127.0.0.1:3000" {
+	if body.Channels[0].ProxyAuthHTTP != "http://alice:secret@0.0.0.0:3000" {
 		t.Fatalf("auth http = %q", body.Channels[0].ProxyAuthHTTP)
 	}
 }
@@ -346,6 +346,78 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	if loaded.Channels[1].ID != "us-3001" {
 		t.Fatalf("new channel id = %q, want us-3001", loaded.Channels[1].ID)
 	}
+
+	channelsReq := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	channelsReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	channelsRec := httptest.NewRecorder()
+	server.ServeHTTP(channelsRec, channelsReq)
+	if channelsRec.Code != http.StatusOK {
+		t.Fatalf("channels status = %d body=%s", channelsRec.Code, channelsRec.Body.String())
+	}
+	var body struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(channelsRec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	if len(body.Channels) != 2 || body.Channels[1].ID != "us-3001" {
+		t.Fatalf("channels view = %+v, want newly configured channel visible before restart", body.Channels)
+	}
+}
+
+func TestUpdateChannelCanRenameExistingConfig(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:            "jp-3000",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    3000,
+		Region:        "jp",
+		SelectionMode: config.SelectionAuto,
+		Enabled:       true,
+	}}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"original_id":"jp-3000","id":"jp-main","listen_host":"0.0.0.0","listen_port":3000,"region":"jp","rotate_minutes":5,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(loaded.Channels) != 1 {
+		t.Fatalf("channels = %d, want 1", len(loaded.Channels))
+	}
+	if loaded.Channels[0].ID != "jp-main" || loaded.Channels[0].RotateMinutes != 5 {
+		t.Fatalf("updated channel = %+v, want renamed jp-main with rotate 5", loaded.Channels[0])
+	}
+
+	channelsReq := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	channelsReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	channelsRec := httptest.NewRecorder()
+	server.ServeHTTP(channelsRec, channelsReq)
+	if channelsRec.Code != http.StatusOK {
+		t.Fatalf("channels status = %d body=%s", channelsRec.Code, channelsRec.Body.String())
+	}
+	var body struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(channelsRec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	if len(body.Channels) != 1 || body.Channels[0].ID != "jp-main" || body.Channels[0].ListenHost != "0.0.0.0" {
+		t.Fatalf("channels view = %+v, want renamed channel visible before restart", body.Channels)
+	}
 }
 
 func TestDeleteChannelPersistsConfig(t *testing.T) {
@@ -376,6 +448,70 @@ func TestDeleteChannelPersistsConfig(t *testing.T) {
 	}
 	if len(loaded.Channels) != 1 || loaded.Channels[0].ID != "jp-3000" {
 		t.Fatalf("channels = %+v, want only jp-3000", loaded.Channels)
+	}
+
+	channelsReq := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	channelsReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	channelsRec := httptest.NewRecorder()
+	server.ServeHTTP(channelsRec, channelsReq)
+	if channelsRec.Code != http.StatusOK {
+		t.Fatalf("channels status = %d body=%s", channelsRec.Code, channelsRec.Body.String())
+	}
+	var body struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(channelsRec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	if len(body.Channels) != 1 || body.Channels[0].ID != "jp-3000" {
+		t.Fatalf("channels view = %+v, want deleted channel hidden before restart", body.Channels)
+	}
+}
+
+func TestDeleteLastChannelPersistsEmptyConfig(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{
+		{ID: "jp-3000", ListenHost: "127.0.0.1", ListenPort: 3000, Region: "jp", SelectionMode: config.SelectionAuto, Enabled: true},
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/channels/jp-3000", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(loaded.Channels) != 0 {
+		t.Fatalf("channels = %+v, want empty", loaded.Channels)
+	}
+
+	channelsReq := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	channelsReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	channelsRec := httptest.NewRecorder()
+	server.ServeHTTP(channelsRec, channelsReq)
+	if channelsRec.Code != http.StatusOK {
+		t.Fatalf("channels status = %d body=%s", channelsRec.Code, channelsRec.Body.String())
+	}
+	var body struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(channelsRec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	if len(body.Channels) != 0 {
+		t.Fatalf("channels view = %+v, want empty before restart", body.Channels)
 	}
 }
 
