@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,6 +25,8 @@ type Server struct {
 	config       config.Config
 	configMu     sync.Mutex
 	adminPath    string
+	adminUser    string
+	adminPass    string
 }
 
 type Option func(*Server)
@@ -33,12 +36,21 @@ func WithConfig(path string, cfg config.Config) Option {
 		s.configPath = path
 		s.config = cfg
 		s.adminPath = normalizeAdminPath(cfg.AdminPath)
+		s.adminUser = cfg.AdminUsername
+		s.adminPass = cfg.AdminPassword
 	}
 }
 
 func WithAdminPath(path string) Option {
 	return func(s *Server) {
 		s.adminPath = normalizeAdminPath(path)
+	}
+}
+
+func WithAdminAuth(username, password string) Option {
+	return func(s *Server) {
+		s.adminUser = username
+		s.adminPass = password
 	}
 }
 
@@ -69,11 +81,19 @@ func NewServer(channels *channel.Manager, nodes *node.Store, connections *connec
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == s.adminPath || r.URL.Path == s.adminPath+"/" {
+		if !s.authorized(r) {
+			s.writeUnauthorized(w)
+			return
+		}
 		s.writeHTML(w, http.StatusOK, indexHTML)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, s.adminPath+"/") {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if !s.authorized(r) {
+		s.writeUnauthorized(w)
 		return
 	}
 
@@ -140,6 +160,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	if s.adminUser == "" && s.adminPass == "" {
+		return true
+	}
+	username, password, ok := r.BasicAuth()
+	if !ok {
+		return false
+	}
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(s.adminUser)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(s.adminPass)) == 1
+	return userOK && passOK
+}
+
+func (s *Server) writeUnauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="Region Proxy Gateway"`)
+	s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
 
 func normalizeAdminPath(path string) string {

@@ -148,6 +148,7 @@ func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"7m"}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -200,6 +201,26 @@ func TestAdminPathHidesRootAndScopesAPI(t *testing.T) {
 	}
 }
 
+func TestAdminAuthProtectsPanelAndAPI(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	server := NewServer(manager, nodes, nil, WithAdminAuth("admin", "secret"))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status without auth = %d, want 401", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)
+	req.SetBasicAuth("admin", "secret")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status with auth = %d, want 200", rec.Code)
+	}
+}
+
 func TestSwitchChannelToNode(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", Available: true}))
@@ -237,6 +258,7 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"id":"us-3001","listen_host":"0.0.0.0","listen_port":3001,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)
@@ -270,6 +292,7 @@ func TestDeleteChannelPersistsConfig(t *testing.T) {
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
 	req := httptest.NewRequest(http.MethodDelete, "/admin/api/channels/us-3001", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
 	server.ServeHTTP(rec, req)

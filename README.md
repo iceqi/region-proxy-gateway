@@ -91,6 +91,35 @@ data/config.json
 }
 ```
 
+## 一键安装
+
+服务器上执行：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/main/install.sh)
+```
+
+脚本会自动完成：
+
+- 安装 OpenVPN、Go、git、jq 等依赖。
+- 拉取或更新 `/opt/region-proxy-gateway`。
+- 编译二进制。
+- 生成 `data/config.json`。
+- 管理面板监听 `0.0.0.0`，端口和 path 随机生成。
+- 管理密码、代理密码随机生成。
+- 默认启用 `openvpn` backend。
+- 安装并启动 `region-proxy-gateway.service`。
+
+重复执行脚本会更新代码并重启服务，已有配置会保留。
+
+安装后常用命令：
+
+```bash
+systemctl status region-proxy-gateway
+journalctl -u region-proxy-gateway -f
+systemctl restart region-proxy-gateway
+```
+
 `selection_mode`：
 
 - `auto`：自动从地区里选一个节点。
@@ -118,6 +147,13 @@ socks5://proxy:change-me-proxy@1.2.3.4:3000
 
 ```text
 http://127.0.0.1:<admin_port><admin_path>
+```
+
+管理面板使用 HTTP Basic Auth，账号密码来自 `data/config.json`：
+
+```text
+admin_username
+admin_password
 ```
 
 当前面板支持查看：

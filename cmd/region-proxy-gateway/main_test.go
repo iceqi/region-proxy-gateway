@@ -25,6 +25,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
+	request.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	services.admin.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -63,6 +64,7 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
+	request.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	services.admin.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
