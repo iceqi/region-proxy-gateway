@@ -204,6 +204,11 @@ func TestIndexReturnsHTML(t *testing.T) {
 			t.Fatalf("admin html missing dayjs plugin %s", plugin)
 		}
 	}
+	for _, text := range []string{"regionText", "日本", "自动优选", "Ping 正常"} {
+		if !strings.Contains(rec.Body.String(), text) {
+			t.Fatalf("admin html missing localized text/helper %q", text)
+		}
+	}
 }
 
 func TestIndexRedirectsToTrailingSlash(t *testing.T) {

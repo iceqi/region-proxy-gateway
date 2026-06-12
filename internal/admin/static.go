@@ -93,7 +93,7 @@ const indexHTML = `<!doctype html>
             <div class="card-body">
               <div class="filter-grid">
                 <a-select v-model:value="filters.region" allow-clear placeholder="地区">
-                  <a-select-option v-for="item in regions" :key="item" :value="item">{{ item }}</a-select-option>
+                  <a-select-option v-for="item in regions" :key="item" :value="item">{{ regionText(item) }}（{{ item }}）</a-select-option>
                 </a-select>
                 <a-select v-model:value="filters.ipType" allow-clear placeholder="IP 类型">
                   <a-select-option value="residential">住宅/家宽</a-select-option>
@@ -116,38 +116,7 @@ const indexHTML = `<!doctype html>
                 <a-input-number v-model:value="filters.limit" :min="10" :max="500" :step="10" style="width:100%"></a-input-number>
               </div>
 
-              <a-table :columns="nodeColumns" :data-source="visibleNodes" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1280, y: 620 }">
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'region'">
-                    <div>{{ record.region }}</div>
-                    <div class="muted">{{ record.country || '' }}</div>
-                  </template>
-                  <template v-else-if="column.key === 'host'">
-                    <div class="host-cell">
-                      <span class="mono">{{ record.hostname || '-' }}</span>
-                      <span class="mono">{{ record.ip || '-' }}</span>
-                    </div>
-                  </template>
-                  <template v-else-if="column.key === 'proto'">{{ record.proto || 'udp' }}:{{ record.port || 1194 }}</template>
-                  <template v-else-if="column.key === 'latency'">{{ record.latency_ms ? record.latency_ms + ' ms' : '-' }}</template>
-                  <template v-else-if="column.key === 'type'"><a-tag :color="ipTypeColor(record.ip_type)">{{ ipTypeText(record.ip_type) || '未知' }}</a-tag></template>
-                  <template v-else-if="column.key === 'purity'"><a-tag :color="purityColor(record.purity_score)">{{ record.purity_score || '未知' }}{{ record.purity_score ? '/100' : '' }} {{ qualityText(record.quality) }}</a-tag></template>
-                  <template v-else-if="column.key === 'owner'">
-                    <div>{{ record.owner || '-' }}</div>
-                    <div class="muted">{{ record.asn || record.as_name || '' }}</div>
-                  </template>
-                  <template v-else-if="column.key === 'status'">
-                    <a-tag :color="record.available ? 'green' : 'red'">{{ record.available ? '可用' : '不可用' }}</a-tag>
-                    <div class="muted">{{ record.probe_message || record.fail_reason || '' }}</div>
-                  </template>
-                  <template v-else-if="column.key === 'actions'">
-                    <div class="action-row">
-                      <a-button size="small" :loading="probing[record.id]" @click="probeNode(record.id)">测速</a-button>
-                      <a-button size="small" type="primary" @click="openNodeSwitchDialog(record)">切换</a-button>
-                    </div>
-                  </template>
-                </template>
-              </a-table>
+              <a-table :columns="nodeColumns" :data-source="visibleNodes" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1280, y: 620 }"></a-table>
             </div>
           </section>
         </a-tab-pane>
@@ -162,31 +131,7 @@ const indexHTML = `<!doctype html>
               <a-button type="primary" @click="openChannelDialog()">新增通道</a-button>
             </div>
             <div class="card-body">
-              <a-table :columns="channelColumns" :data-source="channels" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1300 }">
-                <template #bodyCell="{ column, record }">
-                  <template v-if="column.key === 'mode'">
-                    <a-tag color="blue">{{ record.selection_mode }}</a-tag>
-                    <span>{{ record.rotate_minutes }} 分钟</span>
-                  </template>
-                  <template v-else-if="column.key === 'node'">
-                    <div class="mono">{{ record.current_node_id || '-' }}</div>
-                    <div class="muted">{{ record.last_error || '' }}</div>
-                  </template>
-                  <template v-else-if="column.key === 'connect'">
-                    <div class="connection-box">
-                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono">{{ proxyAddress(record, 'http') }}</code><a-button size="small" @click="copyText(proxyAddress(record, 'http'))">复制</a-button></div>
-                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono">{{ proxyAddress(record, 'socks5') }}</code><a-button size="small" @click="copyText(proxyAddress(record, 'socks5'))">复制</a-button></div>
-                    </div>
-                  </template>
-                  <template v-else-if="column.key === 'actions'">
-                    <div class="action-row">
-                      <a-button size="small" @click="openChannelDialog(record)">编辑</a-button>
-                      <a-button size="small" type="primary" @click="openChannelSwitchDialog(record)">切换</a-button>
-                      <a-button size="small" danger @click="deleteChannel(record.id)">删除</a-button>
-                    </div>
-                  </template>
-                </template>
-              </a-table>
+              <a-table :columns="channelColumns" :data-source="channels" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1300 }"></a-table>
             </div>
           </section>
         </a-tab-pane>
@@ -257,24 +202,13 @@ const indexHTML = `<!doctype html>
           <a-input-number v-model:value="switchFilters.maxLatency" :min="0" placeholder="最大延迟" style="width:100%"></a-input-number>
           <a-input v-model:value="switchFilters.keyword" allow-clear placeholder="IP/ASN/运营商"></a-input>
         </div>
-        <a-table :columns="switchNodeColumns" :data-source="switchDialogNodes" :row-key="record => record.id" size="small" bordered :pagination="{ pageSize: 8 }" :row-selection="{ type: 'radio', selectedRowKeys: channelSwitchDialog.nodeID ? [channelSwitchDialog.nodeID] : [], onChange: onSwitchNodeSelected }">
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'node'">
-              <div class="mono">{{ record.id }}</div>
-              <div class="muted">{{ record.ip || record.hostname || '-' }}</div>
-            </template>
-            <template v-else-if="column.key === 'latency'">{{ record.latency_ms ? record.latency_ms + ' ms' : '-' }}</template>
-            <template v-else-if="column.key === 'type'"><a-tag :color="ipTypeColor(record.ip_type)">{{ ipTypeText(record.ip_type) || '未知' }}</a-tag></template>
-            <template v-else-if="column.key === 'purity'"><a-tag :color="purityColor(record.purity_score)">{{ record.purity_score || '未知' }}{{ record.purity_score ? '/100' : '' }}</a-tag></template>
-            <template v-else-if="column.key === 'owner'">{{ record.owner || '-' }}</template>
-          </template>
-        </a-table>
+        <a-table :columns="switchNodeColumns" :data-source="switchDialogNodes" :row-key="record => record.id" size="small" bordered :pagination="{ pageSize: 8 }" :row-selection="{ type: 'radio', selectedRowKeys: channelSwitchDialog.nodeID ? [channelSwitchDialog.nodeID] : [], onChange: onSwitchNodeSelected }"></a-table>
       </a-modal>
     </main>
   </div>
 
   <script>
-    const { createApp } = Vue;
+    const { createApp, h } = Vue;
     const { message, Modal } = antd;
     const apiBase = (() => {
       const path = window.location.pathname.endsWith('/') ? window.location.pathname : window.location.pathname + '/';
@@ -301,24 +235,24 @@ const indexHTML = `<!doctype html>
           channelSwitchDialog: { open: false, channel: null, nodeID: undefined },
           probing: {},
           nodeColumns: [
-            { title: '地区', key: 'region', width: 88 },
-            { title: '主机 / IP', key: 'host', width: 220 },
-            { title: '协议', key: 'proto', width: 92 },
-            { title: '延迟', key: 'latency', width: 92, sorter: (a, b) => Number(a.latency_ms || 999999) - Number(b.latency_ms || 999999) },
-            { title: '类型', key: 'type', width: 118 },
-            { title: '纯净度', key: 'purity', width: 122, sorter: (a, b) => Number(b.purity_score || 0) - Number(a.purity_score || 0) },
-            { title: 'ASN / 运营商', key: 'owner', width: 190 },
-            { title: '状态', key: 'status', width: 170 },
-            { title: '操作', key: 'actions', width: 150, fixed: 'right' }
+            { title: '地区', key: 'region', width: 110, customRender: ({ record }) => h('div', [h('div', this.regionText(record.region, record.country)), h('div', { class: 'muted' }, record.location || record.country || '')]) },
+            { title: '主机 / IP', key: 'host', width: 220, customRender: ({ record }) => h('div', { class: 'host-cell' }, [h('span', { class: 'mono' }, record.hostname || '-'), h('span', { class: 'mono' }, record.ip || '-')]) },
+            { title: '协议', key: 'proto', width: 92, customRender: ({ record }) => (record.proto || 'udp') + ':' + (record.port || 1194) },
+            { title: '延迟', key: 'latency', width: 92, sorter: (a, b) => Number(a.latency_ms || 999999) - Number(b.latency_ms || 999999), customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '-' },
+            { title: '类型', key: 'type', width: 118, customRender: ({ record }) => h(antd.Tag, { color: this.ipTypeColor(record.ip_type) }, () => this.ipTypeText(record.ip_type) || '未知') },
+            { title: '纯净度', key: 'purity', width: 122, sorter: (a, b) => Number(b.purity_score || 0) - Number(a.purity_score || 0), customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => (record.purity_score ? record.purity_score + '/100 ' : '未知 ') + this.qualityText(record.quality)) },
+            { title: 'ASN / 运营商', key: 'owner', width: 190, customRender: ({ record }) => h('div', [h('div', record.owner || '-'), h('div', { class: 'muted' }, record.asn || record.as_name || '')]) },
+            { title: '状态', key: 'status', width: 180, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.available ? 'green' : 'red' }, () => record.available ? '可用' : '不可用'), h('div', { class: 'muted' }, this.probeMessageText(record))]) },
+            { title: '操作', key: 'actions', width: 150, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', loading: Boolean(this.probing[record.id]), onClick: () => this.probeNode(record.id) }, () => '测速'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openNodeSwitchDialog(record) }, () => '切换')]) }
           ],
           channelColumns: [
             { title: 'ID', dataIndex: 'id', width: 130 },
             { title: '端口', dataIndex: 'listen_port', width: 86 },
-            { title: '地区', dataIndex: 'region', width: 86 },
-            { title: '模式', key: 'mode', width: 140 },
-            { title: '当前节点', key: 'node', width: 190 },
-            { title: '连接方式', key: 'connect', width: 430 },
-            { title: '操作', key: 'actions', width: 230, fixed: 'right' }
+            { title: '地区', dataIndex: 'region', width: 110, customRender: ({ record }) => this.regionText(record.region) + '（' + record.region + '）' },
+            { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
+            { title: '当前节点', key: 'node', width: 190, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: 'muted' }, record.last_error || '')]) },
+            { title: '连接方式', key: 'connect', width: 430, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
+            { title: '操作', key: 'actions', width: 230, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
           connectionColumns: [
             { title: 'ID', dataIndex: 'id' },
@@ -328,11 +262,11 @@ const indexHTML = `<!doctype html>
             { title: '客户端', dataIndex: 'client_addr' }
           ],
           switchNodeColumns: [
-            { title: '节点', key: 'node' },
-            { title: '延迟', key: 'latency', width: 92 },
-            { title: '类型', key: 'type', width: 118 },
-            { title: '纯净度', key: 'purity', width: 110 },
-            { title: '运营商', key: 'owner' }
+            { title: '节点', key: 'node', customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.id), h('div', { class: 'muted' }, record.ip || record.hostname || '-')]) },
+            { title: '延迟', key: 'latency', width: 92, customRender: ({ record }) => record.latency_ms ? record.latency_ms + ' ms' : '-' },
+            { title: '类型', key: 'type', width: 118, customRender: ({ record }) => h(antd.Tag, { color: this.ipTypeColor(record.ip_type) }, () => this.ipTypeText(record.ip_type) || '未知') },
+            { title: '纯净度', key: 'purity', width: 110, customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => record.purity_score ? record.purity_score + '/100' : '未知') },
+            { title: '运营商', key: 'owner', customRender: ({ record }) => record.owner || '-' }
           ]
         };
       },
@@ -506,8 +440,15 @@ const indexHTML = `<!doctype html>
         channelsByRegion(region) {
           return this.channels.filter(ch => ch.region === region && ch.enabled);
         },
+        connectionLine(label, value) {
+          return h('div', { class: 'connection-line' }, [
+            h(antd.Tag, null, () => label),
+            h('code', { class: 'mono' }, value),
+            h(antd.Button, { size: 'small', onClick: () => this.copyText(value) }, () => '复制')
+          ]);
+        },
         nodeLabel(n) {
-          return [n.id, n.latency_ms ? n.latency_ms + 'ms' : '', this.ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');
+          return [n.id, this.regionText(n.region, n.country), n.latency_ms ? n.latency_ms + 'ms' : '', this.ipTypeText(n.ip_type), n.purity_score ? '纯净' + n.purity_score : ''].filter(Boolean).join(' / ');
         },
         copyText(text) {
           if (!text) return;
@@ -532,8 +473,39 @@ const indexHTML = `<!doctype html>
         ipTypeText(type) {
           return ({ residential: '住宅/家宽', hosting: '机房', mobile: '移动网', proxy: '代理' })[type] || type || '';
         },
+        regionText(region, country) {
+          const value = String(region || '').toLowerCase();
+          const byRegion = {
+            jp: '日本', us: '美国', kr: '韩国', hk: '中国香港', tw: '中国台湾', sg: '新加坡',
+            gb: '英国', uk: '英国', de: '德国', fr: '法国', ca: '加拿大', au: '澳大利亚',
+            nl: '荷兰', ru: '俄罗斯', in: '印度', th: '泰国', vn: '越南', id: '印度尼西亚',
+            my: '马来西亚', ph: '菲律宾', br: '巴西', mx: '墨西哥', tr: '土耳其'
+          };
+          const byCountry = {
+            Japan: '日本', 'United States': '美国', Korea: '韩国', 'Korea Republic of': '韩国',
+            Singapore: '新加坡', Germany: '德国', France: '法国', Canada: '加拿大',
+            Australia: '澳大利亚', Netherlands: '荷兰', Russia: '俄罗斯', India: '印度',
+            Thailand: '泰国', Vietnam: '越南', Indonesia: '印度尼西亚', Malaysia: '马来西亚',
+            Philippines: '菲律宾', Brazil: '巴西', Mexico: '墨西哥', Turkey: '土耳其',
+            'United Kingdom': '英国'
+          };
+          return byRegion[value] || byCountry[country] || country || region || '';
+        },
+        selectionModeText(mode) {
+          return ({ auto: '自动优选', manual: '手动节点' })[mode] || mode || '';
+        },
         qualityText(type) {
           return ({ normal: '普通', datacenter: '数据中心', mobile: '移动端', proxy: '代理风险' })[type] || type || '';
+        },
+        probeMessageText(record) {
+          const text = record.probe_message || record.fail_reason || '';
+          if (!text) return '';
+          return text
+            .replace('ping ok; udp port cannot be fully verified without vpn handshake', 'Ping 正常；UDP 端口需建立 VPN 后才能完全确认')
+            .replace('ping ok; tcp port ok', 'Ping 正常；TCP 端口可连接')
+            .replace('ping failed:', 'Ping 失败：')
+            .replace('tcp connect failed:', 'TCP 连接失败：')
+            .replace('missing host', '缺少主机或 IP');
         },
         ipTypeColor(type) {
           return ({ residential: 'green', hosting: 'orange', mobile: 'blue', proxy: 'red' })[type] || 'default';
