@@ -86,9 +86,9 @@ data/region-proxy-gateway.db
 
 旧版本 `config.json` 里的 `channels` 会在首次启动时迁移进 SQLite，并从 JSON 里清空；迁移后通道增删改由管理面板写入数据库。
 
-## 一键安装
+## 部署和使用
 
-服务器上执行：
+在服务器上执行一键安装脚本：
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/main/install.sh)
@@ -106,6 +106,24 @@ bash <(curl -fsSL https://raw.githubusercontent.com/iceqi/region-proxy-gateway/m
 - 安装并启动 `region-proxy-gateway.service`。
 
 重复执行脚本会更新代码并重启服务，已有配置会保留。
+
+安装完成后，脚本会输出管理面板地址、账号和密码，例如：
+
+```text
+Admin: http://服务器IP:随机端口/随机path
+Admin user: admin-xxxx
+Admin password: xxxx
+Proxy user: proxy-xxxx
+Proxy password: xxxx
+```
+
+打开管理面板后，按这个流程使用：
+
+1. 点击更新节点，获取最新 VPNGate 节点。
+2. 新建通道，选择地区和端口，例如日本 `3000`、美国 `3001`。
+3. 选择固定 IP 或设置几分钟自动轮换。
+4. 需要手动指定出口时，在节点列表里筛选地区，再切换到对应通道。
+5. 在通道列表复制 HTTP 或 SOCKS5 代理地址，填到 3x-ui 的上游代理里。
 
 安装后常用命令：
 
@@ -184,10 +202,3 @@ systemctl restart region-proxy-gateway
 `fake` backend 可以直接跑通本地测试。
 
 `openvpn` backend 在 Linux 下会把出站 TCP socket 绑定到通道对应的 tun 设备，例如 `rpg0`、`rpg1`。运行时需要 root 或具备 `SO_BINDTODEVICE` 所需权限。非 Linux 系统会返回明确的不支持错误。
-
-## Build
-
-```bash
-go test ./...
-go build -o region-proxy-gateway ./cmd/region-proxy-gateway
-```
