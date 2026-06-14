@@ -104,6 +104,47 @@ func TestManagerSwitchesChannelToManualNode(t *testing.T) {
 	}
 }
 
+func TestManagerSwitchToNodeStartsStoppedChannel(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Available: true},
+		{ID: "jp-b", Region: "jp", Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionManual,
+			ManualNodeID:  "jp-a",
+			Enabled:       false,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.SwitchToNode(context.Background(), "jp-3000", "jp-b"); err != nil {
+		t.Fatalf("SwitchToNode: %v", err)
+	}
+	snapshot, ok := manager.Snapshot("jp-3000")
+	if !ok {
+		t.Fatalf("missing channel snapshot")
+	}
+	if snapshot.CurrentNodeID != "jp-b" {
+		t.Fatalf("current node = %q, want jp-b", snapshot.CurrentNodeID)
+	}
+	if len(factory.tunnels) != 1 || factory.tunnels[0].startedNode.ID != "jp-b" {
+		t.Fatalf("tunnel start = %+v, want started jp-b", factory.tunnels)
+	}
+}
+
 func TestManagerRotatesAutoChannelToBestAlternativeNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{

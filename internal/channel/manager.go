@@ -153,7 +153,11 @@ func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) er
 		return fmt.Errorf("node %q is region %q, channel requires %q", nodeID, n.Region, ch.cfg.Region)
 	}
 	if ch.tunnel == nil {
-		return fmt.Errorf("channel %q is not running", channelID)
+		if err := m.startChannelWithNodeLocked(ctx, ch, n); err != nil {
+			ch.err = err.Error()
+			return err
+		}
+		return nil
 	}
 	if err := ch.tunnel.Switch(ctx, n); err != nil {
 		ch.err = err.Error()
@@ -161,6 +165,34 @@ func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) er
 	}
 	ch.currentNode = n
 	ch.startedAt = time.Now()
+	ch.cfg.SelectionMode = SelectionManual
+	ch.cfg.ManualNodeID = n.ID
+	ch.err = ""
+	m.recordUse(ctx, ch.cfg.ID, n, ch.startedAt, ch.startedAt)
+	return nil
+}
+
+func (m *Manager) startChannelWithNodeLocked(ctx context.Context, ch *runtimeChannel, n node.Node) error {
+	if m.cfg.TunnelFactory == nil {
+		return fmt.Errorf("tunnel factory is required")
+	}
+	tun := m.cfg.TunnelFactory(ch.cfg.ID)
+	opts := tunnel.Options{
+		Name:       ch.cfg.ID,
+		DataDir:    m.cfg.DataDir,
+		Command:    m.cfg.OpenVPNCmd,
+		DeviceName: m.deviceNameForChannelLocked(ch.cfg.ID),
+	}
+	if err := tun.Start(ctx, n, opts); err != nil {
+		ch.tunnel = tun
+		ch.currentNode = n
+		ch.err = err.Error()
+		return err
+	}
+	ch.tunnel = tun
+	ch.currentNode = n
+	ch.startedAt = time.Now()
+	ch.cfg.Enabled = true
 	ch.cfg.SelectionMode = SelectionManual
 	ch.cfg.ManualNodeID = n.ID
 	ch.err = ""
@@ -269,7 +301,7 @@ func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel)
 		Name:       ch.ID,
 		DataDir:    m.cfg.DataDir,
 		Command:    m.cfg.OpenVPNCmd,
-		DeviceName: fmt.Sprintf("rpg%d", index),
+		DeviceName: m.deviceNameForIndex(index),
 	}
 	if err := tun.Start(ctx, n, opts); err != nil {
 		m.channels[ch.ID] = &runtimeChannel{cfg: ch, tunnel: tun, currentNode: n, err: err.Error()}
@@ -283,6 +315,22 @@ func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel)
 	}
 	m.recordUse(ctx, ch.ID, n, m.channels[ch.ID].startedAt, m.channels[ch.ID].startedAt)
 	return nil
+}
+
+func (m *Manager) deviceNameForChannelLocked(channelID string) string {
+	for i, ch := range m.cfg.Channels {
+		if ch.ID == channelID {
+			return m.deviceNameForIndex(i)
+		}
+	}
+	return m.deviceNameForIndex(len(m.channels))
+}
+
+func (m *Manager) deviceNameForIndex(index int) string {
+	if index < 0 {
+		index = 0
+	}
+	return fmt.Sprintf("rpg%d", index)
 }
 
 func (m *Manager) startRotators(ctx context.Context) {
