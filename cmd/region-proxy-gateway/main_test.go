@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
@@ -23,6 +24,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 		t.Fatalf("buildServices returned error: %v", err)
 	}
 	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
@@ -47,8 +49,45 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 		t.Fatalf("unexpected status body: %+v", body)
 	}
 	wantProxyAddr := fmt.Sprintf("%s:%d", cfg.Channels[0].ListenHost, cfg.Channels[0].ListenPort)
-	if len(services.proxies) != 1 || services.proxies[0].ListenAddr != wantProxyAddr {
-		t.Fatalf("proxies = %+v, want one proxy at %s", services.proxies, wantProxyAddr)
+	if services.proxyRuntime == nil || len(services.proxyRuntime.entries) != 1 || services.proxyRuntime.entries["jp-3000"].server.ListenAddr != wantProxyAddr {
+		t.Fatalf("proxy runtime = %+v, want one proxy at %s", services.proxyRuntime, wantProxyAddr)
+	}
+}
+
+func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	cfg := config.Default()
+	cfg.DataDir = dir
+	cfg.DatabasePath = filepath.Join(dir, "region-proxy-gateway.db")
+	cfg.AdminHost = "127.0.0.1"
+	cfg.Channels[0].ListenHost = "127.0.0.1"
+	cfg.Channels[0].ListenPort = 12347
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	services, err := buildServices(context.Background(), cfg, cfgPath)
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
+	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
+	defer services.storage.Close()
+
+	req := httptest.NewRequest(http.MethodPost, cfg.AdminPath+"/api/channels", strings.NewReader(`{"id":"us-3001","listen_host":"127.0.0.1","listen_port":12348,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	services.admin.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, ok := services.proxyRuntime.entries["us-3001"]; !ok {
+		t.Fatalf("proxy runtime entries = %+v, want us-3001 hot loaded", services.proxyRuntime.entries)
+	}
+	if _, ok := services.channels.Snapshot("us-3001"); !ok {
+		t.Fatalf("channel manager should hot load us-3001")
 	}
 }
 
@@ -60,6 +99,7 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 		t.Fatalf("buildServices returned error: %v", err)
 	}
 	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
 
 	services.tracker.Start("127.0.0.1:50000", "http", "jp-3000", "example.com:443")
 
@@ -101,6 +141,7 @@ func TestBuildServicesMigratesConfigChannelsToSQLite(t *testing.T) {
 		t.Fatalf("buildServices returned error: %v", err)
 	}
 	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
 	defer services.storage.Close()
 
 	loaded, err := config.Load(cfgPath)

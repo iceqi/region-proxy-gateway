@@ -456,9 +456,9 @@ const indexHTML = `<!doctype html>
           if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
           try {
             const body = await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
-            this.noticeRestartResult(body, '通道已保存，服务会自动重启生效');
+            this.noticeRuntimeResult(body, '通道已保存并热更新');
             this.channelDialog.open = false;
-            if (!body.restart_scheduled) await this.load(false);
+            await this.load(false);
           } catch (err) {
             message.error(err.message);
           }
@@ -488,8 +488,8 @@ const indexHTML = `<!doctype html>
           if (!nodeID) return message.warning('请先选择节点');
           try {
             const body = await this.request('channels/' + encodeURIComponent(channelID) + '/switch', { method: 'POST', body: JSON.stringify({ node_id: nodeID }) });
-            this.noticeRestartResult(body, '已切换节点，服务会自动重启生效');
-            if (!body.restart_scheduled) await this.load(false);
+            this.noticeRuntimeResult(body, '已切换节点');
+            await this.load(false);
           } catch (err) {
             message.error(err.message);
           }
@@ -497,14 +497,14 @@ const indexHTML = `<!doctype html>
         async deleteChannel(channelID) {
           Modal.confirm({
             title: '确认删除通道？',
-            content: '删除通道 ' + channelID + ' 后需要重启服务生效。',
+            content: '删除通道 ' + channelID + ' 后会立即关闭对应代理端口。',
             okText: '删除',
             okType: 'danger',
             cancelText: '取消',
             onOk: async () => {
               const body = await this.request('channels/' + encodeURIComponent(channelID), { method: 'DELETE' });
-              this.noticeRestartResult(body, '通道已删除，服务会自动重启生效');
-              if (!body.restart_scheduled) await this.load(false);
+              this.noticeRuntimeResult(body, '通道已删除并热更新');
+              await this.load(false);
             }
           });
         },
@@ -523,10 +523,9 @@ const indexHTML = `<!doctype html>
           const current = channel.current_node || {};
           return current.ip || current.hostname || '-';
         },
-        noticeRestartResult(body, fallback) {
-          if (body && body.restart_error) return message.warning(fallback + '，但自动重启失败：' + body.restart_error);
-          if (body && body.restart_scheduled) return message.success(fallback);
-          return message.success(fallback + '，当前环境未配置自动重启');
+        noticeRuntimeResult(body, fallback) {
+          if (body && body.runtime_error) return message.warning(fallback + '，但热更新失败：' + body.runtime_error);
+          return message.success(fallback);
         },
         connectionLine(label, value) {
           return h('div', { class: 'connection-line' }, [

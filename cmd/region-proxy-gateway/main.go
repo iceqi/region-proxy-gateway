@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,14 +30,13 @@ import (
 var version = "dev"
 
 type services struct {
-	admin      *admin.Server
-	nodes      *node.Store
-	channels   *channel.Manager
-	tracker    *connection.Tracker
-	storage    *storage.Store
-	proxies    []*proxy.Server
-	listeners  []net.Listener
-	configPath string
+	admin        *admin.Server
+	nodes        *node.Store
+	channels     *channel.Manager
+	tracker      *connection.Tracker
+	storage      *storage.Store
+	proxyRuntime *proxyRuntime
+	configPath   string
 }
 
 func main() {
@@ -60,20 +60,6 @@ func main() {
 	defer services.channels.Stop(ctx)
 	defer services.storage.Close()
 
-	for _, p := range services.proxies {
-		listener, err := net.Listen("tcp", p.ListenAddr)
-		if err != nil {
-			log.Fatalf("proxy listen on %s: %v", p.ListenAddr, err)
-		}
-		services.listeners = append(services.listeners, listener)
-		go func(server *proxy.Server, ln net.Listener) {
-			if err := server.Serve(ln); err != nil {
-				log.Printf("proxy channel %s stopped: %v", server.ChannelID, err)
-			}
-		}(p, listener)
-		log.Printf("proxy channel %s listening on %s", p.ChannelID, p.ListenAddr)
-	}
-
 	adminAddr := fmt.Sprintf("%s:%d", cfg.AdminHost, cfg.AdminPort)
 	log.Printf("admin listening on http://%s", adminAddr)
 	adminServer := &http.Server{Addr: adminAddr, Handler: services.admin}
@@ -82,8 +68,8 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = adminServer.Shutdown(shutdownCtx)
-		for _, listener := range services.listeners {
-			_ = listener.Close()
+		if services.proxyRuntime != nil {
+			_ = services.proxyRuntime.Stop(shutdownCtx)
 		}
 	}()
 	if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -176,13 +162,20 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	})
 	go deepWorker.Run(ctx)
 
-	proxies := make([]*proxy.Server, 0, len(channels))
-	for _, ch := range channels {
-		if !ch.Enabled {
-			continue
+	proxyRuntime := newProxyRuntime(cfg.ProxyUsername, cfg.ProxyPassword, manager, tracker)
+	if err := proxyRuntime.Sync(ctx, channels); err != nil {
+		_ = database.Close()
+		return services{}, err
+	}
+	reloadRuntime := func(ctx context.Context) error {
+		nextChannels, err := database.ListChannels(ctx)
+		if err != nil {
+			return err
 		}
-		addr := fmt.Sprintf("%s:%d", ch.ListenHost, ch.ListenPort)
-		proxies = append(proxies, proxy.NewServer(addr, ch.ID, cfg.ProxyUsername, cfg.ProxyPassword, manager, tracker))
+		if err := manager.ReplaceChannels(ctx, nextChannels); err != nil {
+			return err
+		}
+		return proxyRuntime.Sync(ctx, nextChannels)
 	}
 
 	return services{
@@ -212,13 +205,14 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 				}()
 				return nil
 			}),
+			admin.WithRuntimeReloader(reloadRuntime),
 		),
-		nodes:      nodes,
-		channels:   manager,
-		tracker:    tracker,
-		storage:    database,
-		proxies:    proxies,
-		configPath: cfgPath,
+		nodes:        nodes,
+		channels:     manager,
+		tracker:      tracker,
+		storage:      database,
+		proxyRuntime: proxyRuntime,
+		configPath:   cfgPath,
 	}, nil
 }
 
@@ -239,6 +233,85 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 		return nodes, nil
 	}
 	return enriched, nil
+}
+
+type proxyRuntime struct {
+	mu            sync.Mutex
+	proxyUsername string
+	proxyPassword string
+	dialer        proxy.Dialer
+	tracker       *connection.Tracker
+	entries       map[string]*proxyRuntimeEntry
+}
+
+type proxyRuntimeEntry struct {
+	channel  config.Channel
+	server   *proxy.Server
+	listener net.Listener
+}
+
+func newProxyRuntime(proxyUsername string, proxyPassword string, dialer proxy.Dialer, tracker *connection.Tracker) *proxyRuntime {
+	return &proxyRuntime{
+		proxyUsername: proxyUsername,
+		proxyPassword: proxyPassword,
+		dialer:        dialer,
+		tracker:       tracker,
+		entries:       map[string]*proxyRuntimeEntry{},
+	}
+}
+
+func (r *proxyRuntime) Sync(ctx context.Context, channels []config.Channel) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	next := make(map[string]config.Channel, len(channels))
+	for _, ch := range channels {
+		if ch.Enabled {
+			next[ch.ID] = ch
+		}
+	}
+	for id, entry := range r.entries {
+		ch, ok := next[id]
+		if !ok || proxyListenAddr(ch) != proxyListenAddr(entry.channel) {
+			_ = entry.listener.Close()
+			delete(r.entries, id)
+		}
+	}
+	for id, ch := range next {
+		if _, ok := r.entries[id]; ok {
+			r.entries[id].channel = ch
+			continue
+		}
+		addr := proxyListenAddr(ch)
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("proxy listen on %s: %w", addr, err)
+		}
+		server := proxy.NewServer(addr, ch.ID, r.proxyUsername, r.proxyPassword, r.dialer, r.tracker)
+		entry := &proxyRuntimeEntry{channel: ch, server: server, listener: listener}
+		r.entries[id] = entry
+		go func(entry *proxyRuntimeEntry) {
+			if err := entry.server.Serve(entry.listener); err != nil {
+				log.Printf("proxy channel %s stopped: %v", entry.server.ChannelID, err)
+			}
+		}(entry)
+		log.Printf("proxy channel %s listening on %s", ch.ID, addr)
+	}
+	return nil
+}
+
+func (r *proxyRuntime) Stop(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, entry := range r.entries {
+		_ = entry.listener.Close()
+		delete(r.entries, id)
+	}
+	return nil
+}
+
+func proxyListenAddr(ch config.Channel) string {
+	return fmt.Sprintf("%s:%d", ch.ListenHost, ch.ListenPort)
 }
 
 func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store, database *storage.Store) {

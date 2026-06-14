@@ -145,6 +145,60 @@ func TestManagerSwitchToNodeStartsStoppedChannel(t *testing.T) {
 	}
 }
 
+func TestManagerReplaceChannelsAddsUpdatesAndRemovesWithoutProcessRestart(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Available: true},
+		{ID: "us-a", Region: "us", Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.ReplaceChannels(context.Background(), []config.Channel{{
+		ID:            "us-3001",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    3001,
+		Region:        "us",
+		SelectionMode: SelectionAuto,
+		Enabled:       true,
+	}}); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+
+	if _, ok := manager.Snapshot("jp-3000"); ok {
+		t.Fatalf("removed channel should not have snapshot")
+	}
+	snapshot, ok := manager.Snapshot("us-3001")
+	if !ok {
+		t.Fatalf("added channel should have snapshot")
+	}
+	if snapshot.CurrentNodeID != "us-a" {
+		t.Fatalf("added channel node = %q, want us-a", snapshot.CurrentNodeID)
+	}
+	if !factory.tunnels[0].stopped {
+		t.Fatalf("removed channel tunnel should be stopped")
+	}
+	if len(factory.tunnels) != 2 || factory.tunnels[1].startedNode.ID != "us-a" {
+		t.Fatalf("factory tunnels = %+v, want second tunnel started with us-a", factory.tunnels)
+	}
+}
+
 func TestManagerRotatesAutoChannelToBestAlternativeNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -494,6 +548,7 @@ type recordingTunnel struct {
 	switchErr    error
 	dialErrs     int
 	dialCount    int
+	stopped      bool
 }
 
 func (t *recordingTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
@@ -502,6 +557,7 @@ func (t *recordingTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Op
 }
 
 func (t *recordingTunnel) Stop(ctx context.Context) error {
+	t.stopped = true
 	return nil
 }
 

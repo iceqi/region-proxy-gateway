@@ -19,19 +19,20 @@ import (
 )
 
 type Server struct {
-	channels     *channel.Manager
-	nodes        *node.Store
-	connections  *connection.Tracker
-	refreshNodes func(context.Context) ([]node.Node, error)
-	checkNode    func(context.Context, node.Node) node.Node
-	restarter    func(context.Context) error
-	configPath   string
-	config       config.Config
-	configMu     sync.Mutex
-	storage      *storage.Store
-	adminPath    string
-	adminUser    string
-	adminPass    string
+	channels      *channel.Manager
+	nodes         *node.Store
+	connections   *connection.Tracker
+	refreshNodes  func(context.Context) ([]node.Node, error)
+	checkNode     func(context.Context, node.Node) node.Node
+	restarter     func(context.Context) error
+	reloadRuntime func(context.Context) error
+	configPath    string
+	config        config.Config
+	configMu      sync.Mutex
+	storage       *storage.Store
+	adminPath     string
+	adminUser     string
+	adminPass     string
 }
 
 type Option func(*Server)
@@ -80,6 +81,12 @@ func WithStorage(store *storage.Store) Option {
 func WithRestarter(restart func(context.Context) error) Option {
 	return func(s *Server) {
 		s.restarter = restart
+	}
+}
+
+func WithRuntimeReloader(reload func(context.Context) error) Option {
+	return func(s *Server) {
+		s.reloadRuntime = reload
 	}
 }
 
@@ -262,11 +269,9 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	restartScheduled, restartError := s.scheduleRestart()
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"channel":           snapshot,
-		"restart_scheduled": restartScheduled,
-		"restart_error":     restartError,
+		"channel":          snapshot,
+		"channel_reloaded": true,
 	})
 }
 
@@ -302,12 +307,13 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	restartScheduled, restartError := s.scheduleRestart()
+	reloadOK, reloadError := s.reloadRuntimeState(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"config":            cfg,
-		"restart_required":  true,
-		"restart_scheduled": restartScheduled,
-		"restart_error":     restartError,
+		"runtime_reloaded":  reloadOK,
+		"runtime_error":     reloadError,
+		"restart_required":  false,
+		"restart_scheduled": false,
 	})
 }
 
@@ -552,12 +558,13 @@ func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	restartScheduled, restartError := s.scheduleRestart()
+	reloadOK, reloadError := s.reloadRuntimeState(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"config":            cfg,
-		"restart_required":  true,
-		"restart_scheduled": restartScheduled,
-		"restart_error":     restartError,
+		"runtime_reloaded":  reloadOK,
+		"runtime_error":     reloadError,
+		"restart_required":  false,
+		"restart_scheduled": false,
 	})
 }
 
@@ -578,6 +585,16 @@ func (s *Server) scheduleRestart() (bool, string) {
 		return false, ""
 	}
 	if err := s.restarter(context.Background()); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (s *Server) reloadRuntimeState(ctx context.Context) (bool, string) {
+	if s.reloadRuntime == nil {
+		return false, ""
+	}
+	if err := s.reloadRuntime(ctx); err != nil {
 		return false, err.Error()
 	}
 	return true, ""

@@ -131,6 +131,58 @@ func (m *Manager) Stop(ctx context.Context) error {
 	return firstErr
 }
 
+func (m *Manager) ReplaceChannels(ctx context.Context, channels []config.Channel) error {
+	if m.cancel != nil {
+		m.cancel()
+	}
+	m.rotatorWG.Wait()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	nextByID := make(map[string]config.Channel, len(channels))
+	for _, ch := range channels {
+		nextByID[ch.ID] = ch
+	}
+
+	for id, runtime := range m.channels {
+		if _, ok := nextByID[id]; ok {
+			continue
+		}
+		if runtime.tunnel != nil {
+			_ = runtime.tunnel.Stop(ctx)
+		}
+		delete(m.channels, id)
+	}
+
+	m.cfg.Channels = append([]config.Channel(nil), channels...)
+	for index, ch := range m.cfg.Channels {
+		current, exists := m.channels[ch.ID]
+		if !ch.Enabled {
+			if exists && current.tunnel != nil {
+				_ = current.tunnel.Stop(ctx)
+			}
+			m.channels[ch.ID] = &runtimeChannel{cfg: ch}
+			continue
+		}
+		if !exists || current.tunnel == nil || channelRuntimeNeedsRestart(current.cfg, ch) {
+			if exists && current.tunnel != nil {
+				_ = current.tunnel.Stop(ctx)
+			}
+			if err := m.startLocked(ctx, index, ch); err != nil {
+				m.channels[ch.ID] = &runtimeChannel{cfg: ch, err: err.Error()}
+			}
+			continue
+		}
+		current.cfg = ch
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+	m.startRotators(runCtx)
+	return nil
+}
+
 func (m *Manager) RotateNow(ctx context.Context, channelID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -223,6 +275,8 @@ func (m *Manager) Snapshots() []Snapshot {
 }
 
 func (m *Manager) ConfiguredChannels() []config.Channel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	channels := make([]config.Channel, len(m.cfg.Channels))
 	copy(channels, m.cfg.Channels)
 	return channels
@@ -331,6 +385,14 @@ func (m *Manager) deviceNameForIndex(index int) string {
 		index = 0
 	}
 	return fmt.Sprintf("rpg%d", index)
+}
+
+func channelRuntimeNeedsRestart(old config.Channel, next config.Channel) bool {
+	return old.ListenHost != next.ListenHost ||
+		old.ListenPort != next.ListenPort ||
+		old.Region != next.Region ||
+		old.SelectionMode != next.SelectionMode ||
+		old.ManualNodeID != next.ManualNodeID
 }
 
 func (m *Manager) startRotators(ctx context.Context) {

@@ -497,7 +497,7 @@ func TestSwitchChannelToNode(t *testing.T) {
 	}
 }
 
-func TestSwitchChannelToNodeTriggersRestartWhenConfigured(t *testing.T) {
+func TestSwitchChannelToNodeDoesNotRestartService(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	nodes.Replace(append(nodes.List(), node.Node{ID: "jp-2", Region: "jp", IP: "203.0.113.22", Available: true}))
 	path := filepath.Join(t.TempDir(), "config.json")
@@ -528,8 +528,8 @@ func TestSwitchChannelToNodeTriggersRestartWhenConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !restarted {
-		t.Fatalf("expected switching node to trigger restart")
+	if restarted {
+		t.Fatalf("switching node should not restart whole service")
 	}
 	loaded, err := config.Load(path)
 	if err != nil {
@@ -592,7 +592,7 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	}
 }
 
-func TestSaveChannelTriggersRestartWhenConfigured(t *testing.T) {
+func TestSaveChannelReloadsRuntimeWithoutRestartingService(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	path := filepath.Join(t.TempDir(), "config.json")
 	cfg := config.Default()
@@ -600,8 +600,12 @@ func TestSaveChannelTriggersRestartWhenConfigured(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 	restarted := false
+	reloaded := false
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithRestarter(func(ctx context.Context) error {
 		restarted = true
+		return nil
+	}), WithRuntimeReloader(func(ctx context.Context) error {
+		reloaded = true
 		return nil
 	}))
 
@@ -614,8 +618,11 @@ func TestSaveChannelTriggersRestartWhenConfigured(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !restarted {
-		t.Fatalf("expected saving channel to trigger restart")
+	if restarted {
+		t.Fatalf("saving channel should not restart whole service")
+	}
+	if !reloaded {
+		t.Fatalf("saving channel should reload runtime")
 	}
 }
 
@@ -772,6 +779,43 @@ func TestDeleteChannelPersistsConfig(t *testing.T) {
 	}
 	if len(body.Channels) != 1 || body.Channels[0].ID != "jp-3000" {
 		t.Fatalf("channels view = %+v, want deleted channel hidden before restart", body.Channels)
+	}
+}
+
+func TestDeleteChannelReloadsRuntimeWithoutRestartingService(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{
+		{ID: "jp-3000", ListenHost: "127.0.0.1", ListenPort: 3000, Region: "jp", SelectionMode: config.SelectionAuto, Enabled: true},
+	}
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save initial config: %v", err)
+	}
+	restarted := false
+	reloaded := false
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithRestarter(func(ctx context.Context) error {
+		restarted = true
+		return nil
+	}), WithRuntimeReloader(func(ctx context.Context) error {
+		reloaded = true
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/api/channels/jp-3000", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if restarted {
+		t.Fatalf("deleting channel should not restart whole service")
+	}
+	if !reloaded {
+		t.Fatalf("deleting channel should reload runtime")
 	}
 }
 
