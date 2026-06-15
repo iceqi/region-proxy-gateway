@@ -23,19 +23,40 @@ const indexHTML = `<!doctype html>
     [v-cloak] { display: none; }
     .shell { min-height: 100vh; background: transparent; }
     .topbar { position: sticky; top: 0; z-index: 20; min-height: 76px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, #101827 0%, #182a44 52%, #0f766e 130%); border-bottom: 1px solid rgba(255,255,255,.10); box-shadow: 0 18px 44px rgba(15, 23, 42, .22); }
-    .brand { display: grid; gap: 4px; min-width: 0; color: #fff; }
-    .brand h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: 0; }
-    .brand span { color: #aebbd0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand { display: flex; align-items: center; min-width: 0; color: #fff; }
+    .brand h1 { margin: 0; font-size: 21px; font-weight: 800; letter-spacing: .01em; }
     .page { max-width: 1560px; margin: 0 auto; padding: 28px 24px 40px; }
     .hero-strip { margin-bottom: 18px; padding: 18px 20px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 18px; background: linear-gradient(135deg, rgba(255,255,255,.92), rgba(240,247,255,.82)); box-shadow: 0 18px 48px rgba(30, 41, 59, .08); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
     .hero-title { font-size: 18px; font-weight: 800; color: #0f172a; }
     .hero-subtitle { color: #64748b; margin-top: 4px; }
     .signal-dot { width: 10px; height: 10px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 6px rgba(34,197,94,.14); display: inline-block; margin-right: 8px; }
-    .login-wrap { min-height: calc(100vh - 76px); display: grid; place-items: center; padding: 32px 16px; }
-    .login-card { width: min(440px, 100%); border: 1px solid rgba(203,213,225,.86); border-radius: 22px; padding: 28px; background: rgba(255,255,255,.94); box-shadow: 0 24px 70px rgba(15, 23, 42, .14); }
-    .login-card h2 { margin: 0; font-size: 24px; color: #0f172a; }
-    .login-card p { margin: 8px 0 22px; color: #64748b; }
-    .login-form { display: grid; gap: 14px; }
+    .login-wrap { min-height: calc(100vh - 76px); display: grid; place-items: center; padding: 44px 18px; position: relative; overflow: hidden; }
+    .login-wrap::before { content: ''; position: absolute; width: 560px; height: 560px; right: -180px; top: -180px; border-radius: 50%; background: radial-gradient(circle, rgba(14,165,233,.28), rgba(14,165,233,0) 66%); }
+    .login-wrap::after { content: ''; position: absolute; width: 520px; height: 520px; left: -180px; bottom: -220px; border-radius: 50%; background: radial-gradient(circle, rgba(34,197,94,.22), rgba(34,197,94,0) 68%); }
+    .login-stage { width: min(1040px, 100%); display: grid; grid-template-columns: 1.08fr .92fr; gap: 22px; position: relative; z-index: 1; }
+    .login-visual, .login-card { border: 1px solid rgba(203,213,225,.76); border-radius: 28px; background: rgba(255,255,255,.78); box-shadow: 0 30px 90px rgba(15, 23, 42, .16); backdrop-filter: blur(18px); }
+    .login-visual { min-height: 500px; padding: 34px; color: #e0f2fe; background: radial-gradient(circle at 76% 22%, rgba(45,212,191,.38), transparent 30%), linear-gradient(145deg, #0f172a 0%, #164e63 58%, #047857 120%); position: relative; overflow: hidden; }
+    .login-visual::before { content: ''; position: absolute; inset: 22px; border-radius: 24px; border: 1px solid rgba(255,255,255,.12); pointer-events: none; }
+    .login-orbit { position: absolute; width: 260px; height: 260px; right: 36px; top: 54px; border-radius: 50%; border: 1px solid rgba(186,230,253,.32); }
+    .login-orbit::before, .login-orbit::after { content: ''; position: absolute; border-radius: 50%; background: #67e8f9; box-shadow: 0 0 34px rgba(103,232,249,.7); }
+    .login-orbit::before { width: 13px; height: 13px; left: 32px; top: 34px; }
+    .login-orbit::after { width: 9px; height: 9px; right: 46px; bottom: 24px; background: #86efac; }
+    .login-grid { position: absolute; inset: auto 0 0 0; height: 180px; opacity: .22; background-image: linear-gradient(rgba(255,255,255,.32) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.32) 1px, transparent 1px); background-size: 36px 36px; mask-image: linear-gradient(transparent, #000); }
+    .login-badge { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid rgba(186,230,253,.24); border-radius: 999px; background: rgba(15,23,42,.35); color: #bae6fd; font-size: 12px; font-weight: 650; position: relative; z-index: 1; }
+    .login-badge-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 5px rgba(34,197,94,.15); }
+    .login-visual h2 { margin: 76px 0 14px; font-size: clamp(34px, 5vw, 56px); line-height: 1.02; color: #fff; letter-spacing: -.045em; max-width: 460px; position: relative; z-index: 1; }
+    .login-visual p { margin: 0; color: rgba(224,242,254,.78); font-size: 15px; line-height: 1.8; max-width: 430px; position: relative; z-index: 1; }
+    .login-metrics { position: absolute; left: 34px; right: 34px; bottom: 34px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; z-index: 1; }
+    .login-metric { padding: 14px; border: 1px solid rgba(255,255,255,.13); border-radius: 18px; background: rgba(15,23,42,.34); }
+    .login-metric strong { display: block; color: #fff; font-size: 18px; margin-bottom: 4px; }
+    .login-metric span { color: rgba(224,242,254,.68); font-size: 12px; }
+    .login-card { padding: 34px; align-self: stretch; display: flex; flex-direction: column; justify-content: center; background: rgba(255,255,255,.94); }
+    .login-card h2 { margin: 0; font-size: 28px; color: #0f172a; letter-spacing: -.03em; }
+    .login-card p { margin: 10px 0 26px; color: #64748b; line-height: 1.7; }
+    .login-form { display: grid; gap: 15px; }
+    .login-form .ant-input-affix-wrapper, .login-form .ant-input { border-radius: 13px; }
+    .login-form .ant-btn-primary { height: 46px; border-radius: 13px; font-weight: 750; background: linear-gradient(135deg, #0ea5e9, #10b981); box-shadow: 0 16px 30px rgba(14,165,233,.22); }
+    .login-tip { margin-top: 18px; padding: 12px 14px; border-radius: 16px; background: #f0f9ff; border: 1px solid #dbeafe; color: #475569; font-size: 12px; line-height: 1.65; }
     .stats { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
     .stat { background: rgba(255,255,255,.92); border: 1px solid rgba(203, 213, 225, .78); border-radius: 16px; padding: 16px; box-shadow: 0 14px 34px rgba(23, 32, 51, .07); }
     .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
@@ -68,10 +89,15 @@ const indexHTML = `<!doctype html>
     @media (max-width: 1100px) {
       .stats { grid-template-columns: 1fr 1fr; }
       .filter-grid, .modal-filter { grid-template-columns: 1fr 1fr; }
+      .login-stage { grid-template-columns: 1fr; max-width: 560px; }
+      .login-visual { min-height: 360px; }
     }
     @media (max-width: 720px) {
       .topbar { height: auto; min-height: 60px; padding: 12px; align-items: flex-start; flex-direction: column; gap: 12px; }
       .page { padding: 12px; }
+      .login-wrap { padding: 22px 12px; }
+      .login-visual { display: none; }
+      .login-card { padding: 24px; border-radius: 22px; }
       .stats, .filter-grid, .modal-grid, .modal-filter { grid-template-columns: 1fr; }
       .connection-line { grid-template-columns: 1fr; }
       .content-panel .ant-tabs-nav { padding: 0 12px; }
@@ -84,7 +110,6 @@ const indexHTML = `<!doctype html>
     <header class="topbar">
       <div class="brand">
         <h1>Region Proxy Gateway</h1>
-        <span>{{ apiBase }}</span>
       </div>
       <a-space>
         <a-button v-if="isLoggedIn" :loading="loading" @click="load">刷新</a-button>
@@ -95,14 +120,29 @@ const indexHTML = `<!doctype html>
     </header>
 
     <section v-if="!isLoggedIn" class="login-wrap">
-      <div class="login-card">
-        <h2>登录管理后台</h2>
-        <p>使用后台管理账号登录。可选择本地浏览器记住账号密码。</p>
-        <div class="login-form">
-          <a-input v-model:value="loginForm.username" size="large" placeholder="后台账号" @press-enter="login"></a-input>
-          <a-input-password v-model:value="loginForm.password" size="large" placeholder="后台密码" @press-enter="login"></a-input-password>
-          <a-checkbox v-model:checked="loginForm.rememberCredentials">本地记住账号密码</a-checkbox>
-          <a-button type="primary" size="large" :loading="loginLoading" @click="login">登录</a-button>
+      <div class="login-stage">
+        <aside class="login-visual" aria-hidden="true">
+          <div class="login-orbit"></div>
+          <div class="login-grid"></div>
+          <div class="login-badge"><span class="login-badge-dot"></span>Encrypted proxy control plane</div>
+          <h2>Route traffic with cleaner regional exits.</h2>
+          <p>Monitor tunnel health, rotate exits, and keep every proxy channel isolated from one focused gateway console.</p>
+          <div class="login-metrics">
+            <div class="login-metric"><strong>HTTP</strong><span>Forward proxy</span></div>
+            <div class="login-metric"><strong>SOCKS5</strong><span>Credential access</span></div>
+            <div class="login-metric"><strong>IP</strong><span>Auto rotation</span></div>
+          </div>
+        </aside>
+        <div class="login-card">
+          <h2>登录管理后台</h2>
+          <p>使用后台管理账号进入控制台。勾选后会在当前浏览器本地保存账号密码。</p>
+          <div class="login-form">
+            <a-input v-model:value="loginForm.username" size="large" placeholder="后台账号" @press-enter="login"></a-input>
+            <a-input-password v-model:value="loginForm.password" size="large" placeholder="后台密码" @press-enter="login"></a-input-password>
+            <a-checkbox v-model:checked="loginForm.rememberCredentials">本地记住账号密码</a-checkbox>
+            <a-button type="primary" size="large" :loading="loginLoading" @click="login">进入控制台</a-button>
+          </div>
+          <div class="login-tip">登录页只展示静态外壳；节点、通道、连接串等敏感数据仍需认证后通过 API 加载。</div>
         </div>
       </div>
     </section>
