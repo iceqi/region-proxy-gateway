@@ -273,6 +273,7 @@ const indexHTML = `<!doctype html>
             { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
+            { title: '轮换状态', key: 'rotation', width: 360, customRender: ({ record }) => this.rotationStateCell(record) },
             { title: '连接方式', key: 'connect', width: 560, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
             { title: '操作', key: 'actions', width: 170, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
@@ -521,7 +522,49 @@ const indexHTML = `<!doctype html>
         },
         channelExitAddress(channel) {
           const current = channel.current_node || {};
-          return current.ip || current.hostname || '-';
+          return channel.current_exit_ip || current.ip || current.hostname || '-';
+        },
+        rotationExitText(value) {
+          return value || '-';
+        },
+        rotationStateCell(record) {
+          const status = this.rotationStatus(record);
+          return h('div', { class: 'rotation-box' }, [
+            h('div', { class: 'rotation-head' }, [h(antd.Tag, { color: status.color }, () => status.text), h('span', { class: 'muted' }, status.detail)]),
+            this.rotationStateLine('上次出口', this.rotationExitText(record.last_exit_ip)),
+            this.rotationStateLine('当前出口', this.rotationExitText(record.current_exit_ip || this.channelExitAddress(record))),
+            this.rotationStateLine('上次轮换', this.formatChannelTime(record.last_rotation_at)),
+            this.rotationStateLine('下次轮换', this.formatChannelTime(record.next_rotation_at))
+          ]);
+        },
+        rotationStatus(record) {
+          if (!record.enabled) return { color: 'default', text: '已停用', detail: '通道未启用' };
+          if (record.selection_mode === 'manual') return { color: 'purple', text: '手动节点', detail: '不会自动轮换' };
+          if (!record.rotate_minutes) return { color: 'default', text: '固定出口', detail: '未设置轮换间隔' };
+          if (record.last_error) return { color: 'red', text: '轮换异常', detail: '请求失败会继续自恢复' };
+          const remaining = this.rotationRemainingText(record.next_rotation_at);
+          return { color: 'green', text: '自动轮换', detail: remaining ? '约 ' + remaining + ' 后轮换' : '等待下一次计划' };
+        },
+        rotationRemainingText(value) {
+          if (!value) return '';
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return '';
+          const ms = date.getTime() - Date.now();
+          if (ms <= 0) return '即将';
+          const minutes = Math.ceil(ms / 60000);
+          if (minutes < 60) return minutes + ' 分钟';
+          const hours = Math.floor(minutes / 60);
+          const rest = minutes % 60;
+          return hours + ' 小时' + (rest ? ' ' + rest + ' 分钟' : '');
+        },
+        rotationStateLine(label, value) {
+          return h('div', [h('span', { class: 'muted' }, label + '：'), h('span', { class: 'mono' }, value || '-')]);
+        },
+        formatChannelTime(value) {
+          if (!value) return '-';
+          const date = new Date(value);
+          if (Number.isNaN(date.getTime())) return '-';
+          return date.toLocaleString();
         },
         noticeRuntimeResult(body, fallback) {
           if (body && body.runtime_error) return message.warning(fallback + '，但热更新失败：' + body.runtime_error);

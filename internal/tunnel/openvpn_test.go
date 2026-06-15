@@ -172,6 +172,34 @@ func TestOpenVPNTunnelDialBindsToStartedDevice(t *testing.T) {
 	}
 }
 
+func TestOpenVPNTunnelMarksNotReadyWhenDeviceDialFails(t *testing.T) {
+	dialer := &recordingDeviceDialer{err: errors.New("no such device")}
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir:      t.TempDir(),
+		Starter:      &recordingProcessStarter{},
+		DeviceDialer: dialer,
+	})
+	if err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-3000", DeviceName: "rpg7"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
+
+	_, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
+	if err == nil || !strings.Contains(err.Error(), "no such device") {
+		t.Fatalf("DialContext error = %v, want no such device", err)
+	}
+
+	status := tun.Status()
+	if status.Ready {
+		t.Fatalf("status ready = true, want false after device dial failure")
+	}
+	if !strings.Contains(status.Error, "no such device") {
+		t.Fatalf("status error = %q, want no such device", status.Error)
+	}
+}
+
 func TestOpenVPNTunnelDialRequiresStartedTunnel(t *testing.T) {
 	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: &recordingProcessStarter{}})
 	_, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
@@ -387,6 +415,7 @@ func (s *failingSecondStartProcessStarter) Start(ctx context.Context, command []
 
 type recordingDeviceDialer struct {
 	conn       net.Conn
+	err        error
 	deviceName string
 	network    string
 	address    string
@@ -396,6 +425,9 @@ func (d *recordingDeviceDialer) DialContext(ctx context.Context, deviceName, net
 	d.deviceName = deviceName
 	d.network = network
 	d.address = address
+	if d.err != nil {
+		return nil, d.err
+	}
 	return d.conn, nil
 }
 

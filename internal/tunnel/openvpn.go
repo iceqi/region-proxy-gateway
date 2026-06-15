@@ -265,7 +265,12 @@ func (o *OpenVPN) DialContext(ctx context.Context, network, address string) (net
 	if deviceName == "" {
 		return nil, fmt.Errorf("openvpn tunnel has no device name")
 	}
-	return dialer.DialContext(ctx, deviceName, network, address)
+	conn, err := dialer.DialContext(ctx, deviceName, network, address)
+	if err != nil {
+		o.markDialFailure(err)
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (o *OpenVPN) Status() Status {
@@ -310,6 +315,15 @@ func (o *OpenVPN) finishStop() {
 func (o *OpenVPN) setError(err error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if err != nil {
+		o.status.Error = err.Error()
+	}
+}
+
+func (o *OpenVPN) markDialFailure(err error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.status.Ready = false
 	if err != nil {
 		o.status.Error = err.Error()
 	}

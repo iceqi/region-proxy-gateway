@@ -58,11 +58,13 @@ type Manager struct {
 }
 
 type runtimeChannel struct {
-	cfg         config.Channel
-	tunnel      tunnel.Tunnel
-	currentNode node.Node
-	startedAt   time.Time
-	err         string
+	cfg            config.Channel
+	tunnel         tunnel.Tunnel
+	currentNode    node.Node
+	lastNode       node.Node
+	startedAt      time.Time
+	lastRotationAt time.Time
+	err            string
 }
 
 type Snapshot struct {
@@ -76,6 +78,10 @@ type Snapshot struct {
 	Enabled        bool          `json:"enabled"`
 	CurrentNodeID  string        `json:"current_node_id"`
 	CurrentNode    node.Node     `json:"current_node"`
+	LastExitIP     string        `json:"last_exit_ip"`
+	CurrentExitIP  string        `json:"current_exit_ip"`
+	LastRotationAt time.Time     `json:"last_rotation_at"`
+	NextRotationAt time.Time     `json:"next_rotation_at"`
 	TunnelStatus   tunnel.Status `json:"tunnel_status"`
 	LastError      string        `json:"last_error"`
 	StartedAt      time.Time     `json:"started_at"`
@@ -215,8 +221,10 @@ func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) er
 		ch.err = err.Error()
 		return err
 	}
+	ch.lastNode = ch.currentNode
 	ch.currentNode = n
 	ch.startedAt = time.Now()
+	ch.lastRotationAt = ch.startedAt
 	ch.cfg.SelectionMode = SelectionManual
 	ch.cfg.ManualNodeID = n.ID
 	ch.err = ""
@@ -242,8 +250,10 @@ func (m *Manager) startChannelWithNodeLocked(ctx context.Context, ch *runtimeCha
 		return err
 	}
 	ch.tunnel = tun
+	ch.lastNode = ch.currentNode
 	ch.currentNode = n
 	ch.startedAt = time.Now()
+	ch.lastRotationAt = ch.startedAt
 	ch.cfg.Enabled = true
 	ch.cfg.SelectionMode = SelectionManual
 	ch.cfg.ManualNodeID = n.ID
@@ -297,21 +307,122 @@ func (m *Manager) DialContext(ctx context.Context, channelID, network, address s
 		lastErr = err
 	}
 
-	if err := m.RotateNow(ctx, channelID); err != nil {
-		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries: %v; rotate failed: %v", dialRetryCount, lastErr, err))
-		return nil, fmt.Errorf("dial failed after %d retries: %w; rotate failed: %v", dialRetryCount, lastErr, err)
+	if conn, err := m.recoverChannelAfterDialFailure(ctx, channelID, network, address); err == nil {
+		m.clearError(channelID)
+		return conn, nil
+	} else {
+		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries: %v; recovery failed: %v", dialRetryCount, lastErr, err))
+		return nil, fmt.Errorf("dial failed after %d retries: %w; recovery failed: %v", dialRetryCount, lastErr, err)
 	}
+}
 
-	tun, err := m.tunnelForDial(channelID)
-	if err != nil {
+func (m *Manager) recoverChannelAfterDialFailure(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	m.mu.RLock()
+	ch, ok := m.channels[channelID]
+	if !ok {
+		m.mu.RUnlock()
+		return nil, fmt.Errorf("channel %q not found", channelID)
+	}
+	selectionMode := ch.cfg.SelectionMode
+	m.mu.RUnlock()
+
+	switch selectionMode {
+	case SelectionAuto:
+		return m.recoverAutoChannel(ctx, channelID, network, address)
+	case SelectionManual:
+		return m.recoverManualChannel(ctx, channelID, network, address)
+	default:
+		return nil, fmt.Errorf("channel %q has unsupported selection mode %q", channelID, selectionMode)
+	}
+}
+
+func (m *Manager) recoverAutoChannel(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	var lastErr error
+	tried := map[string]struct{}{}
+	for {
+		m.mu.Lock()
+		ch, ok := m.channels[channelID]
+		if !ok {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("channel %q not found", channelID)
+		}
+		if !ch.cfg.Enabled {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("channel %q is disabled", channelID)
+		}
+		if ch.tunnel == nil {
+			m.mu.Unlock()
+			return nil, fmt.Errorf("channel %q is not running", channelID)
+		}
+		if ch.currentNode.ID != "" {
+			tried[ch.currentNode.ID] = struct{}{}
+		}
+		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, ch.currentNode.ID, tried)
+		if err != nil {
+			m.mu.Unlock()
+			if lastErr != nil {
+				return nil, fmt.Errorf("%w; no more candidates: %v", lastErr, err)
+			}
+			return nil, err
+		}
+		tried[n.ID] = struct{}{}
+		if err := ch.tunnel.Switch(ctx, n); err != nil {
+			ch.err = err.Error()
+			lastErr = err
+			m.mu.Unlock()
+			continue
+		}
+		ch.lastNode = ch.currentNode
+		ch.currentNode = n
+		ch.startedAt = time.Now()
+		ch.lastRotationAt = ch.startedAt
+		ch.err = ""
+		tun := ch.tunnel
+		connectedAt := ch.startedAt
+		m.recordUse(ctx, ch.cfg.ID, n, connectedAt, connectedAt)
+		m.mu.Unlock()
+
+		conn, err := tun.DialContext(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		m.setChannelError(channelID, fmt.Sprintf("recovered node %q failed dial: %v", n.ID, err))
+	}
+}
+
+func (m *Manager) recoverManualChannel(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	m.mu.Lock()
+	ch, ok := m.channels[channelID]
+	if !ok {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("channel %q not found", channelID)
+	}
+	if ch.tunnel == nil {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("channel %q is not running", channelID)
+	}
+	if ch.currentNode.ID == "" {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("manual channel %q has no current node", channelID)
+	}
+	if err := ch.tunnel.Switch(ctx, ch.currentNode); err != nil {
+		ch.err = err.Error()
+		m.mu.Unlock()
 		return nil, err
 	}
+	ch.startedAt = time.Now()
+	ch.lastRotationAt = ch.startedAt
+	ch.err = ""
+	tun := ch.tunnel
+	m.recordUse(ctx, ch.cfg.ID, ch.currentNode, ch.startedAt, ch.startedAt)
+	m.mu.Unlock()
+
 	conn, err := tun.DialContext(ctx, network, address)
 	if err != nil {
-		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries and node rotation: %v", dialRetryCount, err))
-		return nil, fmt.Errorf("dial failed after %d retries and node rotation: %w", dialRetryCount, err)
+		m.setChannelError(channelID, err.Error())
+		return nil, err
 	}
-	m.clearError(channelID)
 	return conn, nil
 }
 
@@ -450,8 +561,10 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 		ch.err = err.Error()
 		return err
 	}
+	ch.lastNode = ch.currentNode
 	ch.currentNode = n
 	ch.startedAt = time.Now()
+	ch.lastRotationAt = ch.startedAt
 	ch.err = ""
 	m.recordUse(ctx, ch.cfg.ID, n, ch.startedAt, ch.startedAt)
 	return nil
@@ -487,6 +600,33 @@ func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, cur
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
+}
+
+func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch config.Channel, currentNodeID string, avoided map[string]struct{}) (node.Node, error) {
+	if m.cfg.Nodes == nil {
+		return node.Node{}, fmt.Errorf("node store is required")
+	}
+	var best node.Node
+	found := false
+	for _, candidate := range m.cfg.Nodes.CandidatesByRegion(ch.Region, "", 0) {
+		if candidate.ID == currentNodeID {
+			continue
+		}
+		if ch.ManualNodeID != "" && candidate.ID == ch.ManualNodeID {
+			continue
+		}
+		if _, ok := avoided[candidate.ID]; ok {
+			continue
+		}
+		if !found || betterRotationNode(candidate, best, map[string]deeptest.Result{}, map[string]time.Time{}) {
+			best = candidate
+			found = true
+		}
+	}
+	if !found {
+		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
+	}
+	return best, nil
 }
 
 func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, bool) {
@@ -624,6 +764,14 @@ func snapshotOf(ch *runtimeChannel) Snapshot {
 	if ch.tunnel != nil {
 		status = ch.tunnel.Status()
 	}
+	nextRotationAt := time.Time{}
+	if ch.cfg.Enabled && ch.cfg.SelectionMode == SelectionAuto && ch.cfg.RotateMinutes > 0 && !ch.startedAt.IsZero() {
+		base := ch.lastRotationAt
+		if base.IsZero() {
+			base = ch.startedAt
+		}
+		nextRotationAt = base.Add(time.Duration(ch.cfg.RotateMinutes) * time.Minute)
+	}
 	return Snapshot{
 		ID:             ch.cfg.ID,
 		ListenHost:     ch.cfg.ListenHost,
@@ -635,12 +783,23 @@ func snapshotOf(ch *runtimeChannel) Snapshot {
 		Enabled:        ch.cfg.Enabled,
 		CurrentNodeID:  ch.currentNode.ID,
 		CurrentNode:    ch.currentNode,
+		LastExitIP:     nodeExitIP(ch.lastNode),
+		CurrentExitIP:  nodeExitIP(ch.currentNode),
+		LastRotationAt: ch.lastRotationAt,
+		NextRotationAt: nextRotationAt,
 		TunnelStatus:   status,
 		LastError:      ch.err,
 		StartedAt:      ch.startedAt,
 		ProxyURLHTTP:   fmt.Sprintf("http://%s:%d", ch.cfg.ListenHost, ch.cfg.ListenPort),
 		ProxyURLSOCKS5: fmt.Sprintf("socks5://%s:%d", ch.cfg.ListenHost, ch.cfg.ListenPort),
 	}
+}
+
+func nodeExitIP(n node.Node) string {
+	if n.IP != "" {
+		return n.IP
+	}
+	return n.Hostname
 }
 
 func firstNonEmpty(values ...string) string {

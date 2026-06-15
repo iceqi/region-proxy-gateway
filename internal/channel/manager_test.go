@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -359,6 +360,98 @@ func TestManagerRetriesDialFailuresThenRotatesAutoChannel(t *testing.T) {
 	}
 }
 
+func TestManagerAutoChannelTriesNextNodeWhenRecoveredNodeStillFails(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 200, Available: true},
+		{ID: "jp-c", Region: "jp", Speed: 100, Available: true},
+	})
+	factory := &recordingFactory{dialErrs: 4, dialErrByNode: map[string]error{"jp-b": fmt.Errorf("node b failed")}}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	conn, err := manager.DialContext(context.Background(), "jp-3000", "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	_ = conn.Close()
+
+	if len(factory.tunnels) != 1 {
+		t.Fatalf("tunnel count = %d, want one tunnel switching candidates", len(factory.tunnels))
+	}
+	wantSwitches := []string{"jp-b", "jp-c"}
+	if !reflect.DeepEqual(factory.tunnels[0].switchedNodes, wantSwitches) {
+		t.Fatalf("switched nodes = %#v, want %#v", factory.tunnels[0].switchedNodes, wantSwitches)
+	}
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-c" {
+		t.Fatalf("current node = %q, want jp-c after fallbacks", snapshot.CurrentNodeID)
+	}
+	if snapshot.LastError != "" {
+		t.Fatalf("last error = %q, want empty after successful fallback", snapshot.LastError)
+	}
+}
+
+func TestManagerRestartsManualChannelAfterDialFailures(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{{ID: "jp-a", Region: "jp", Speed: 100, Available: true}})
+	factory := &recordingFactory{dialErrs: 4}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionManual,
+			ManualNodeID:  "jp-a",
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	conn, err := manager.DialContext(context.Background(), "jp-3000", "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	_ = conn.Close()
+
+	if len(factory.tunnels) != 1 {
+		t.Fatalf("tunnel count = %d, want restart on the same tunnel", len(factory.tunnels))
+	}
+	if factory.tunnels[0].switchedNode.ID != "jp-a" {
+		t.Fatalf("restarted node = %q, want jp-a", factory.tunnels[0].switchedNode.ID)
+	}
+	if factory.tunnels[0].dialCount != 5 {
+		t.Fatalf("dial count = %d, want 5 attempts across restart", factory.tunnels[0].dialCount)
+	}
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.LastError != "" {
+		t.Fatalf("last error = %q, want empty after successful restart", snapshot.LastError)
+	}
+}
+
 func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -396,6 +489,63 @@ func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
 	snapshot, _ := manager.Snapshot("jp-3000")
 	if snapshot.CurrentNodeID != "jp-c" {
 		t.Fatalf("current node = %q, want jp-c because jp-a is current and jp-b was used recently", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerSnapshotTracksRotationMetadata(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", IP: "198.51.100.10", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", IP: "198.51.100.20", Speed: 200, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	initial, _ := manager.Snapshot("jp-3000")
+	if initial.CurrentExitIP != "198.51.100.10" {
+		t.Fatalf("current exit ip = %q, want initial node ip", initial.CurrentExitIP)
+	}
+	if initial.LastExitIP != "" {
+		t.Fatalf("last exit ip = %q, want empty before first rotation", initial.LastExitIP)
+	}
+	if initial.NextRotationAt.IsZero() {
+		t.Fatalf("next rotation time should be set for auto channel")
+	}
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.LastExitIP != "198.51.100.10" {
+		t.Fatalf("last exit ip = %q, want previous node ip", snapshot.LastExitIP)
+	}
+	if snapshot.CurrentExitIP != "198.51.100.20" {
+		t.Fatalf("current exit ip = %q, want rotated node ip", snapshot.CurrentExitIP)
+	}
+	if snapshot.LastRotationAt.IsZero() {
+		t.Fatalf("last rotation time should be set after rotation")
+	}
+	wantNext := snapshot.LastRotationAt.Add(10 * time.Minute)
+	if !snapshot.NextRotationAt.Equal(wantNext) {
+		t.Fatalf("next rotation = %v, want %v", snapshot.NextRotationAt, wantNext)
 	}
 }
 
@@ -530,25 +680,33 @@ func TestManagerDialReturnsErrorWhenRetriesAndRotationFail(t *testing.T) {
 }
 
 type recordingFactory struct {
-	tunnels   []*recordingTunnel
-	switchErr error
-	dialErrs  int
+	tunnels          []*recordingTunnel
+	switchErr        error
+	dialErrs         int
+	dialErrsByTunnel []int
+	dialErrByNode    map[string]error
 }
 
 func (f *recordingFactory) New(name string) tunnel.Tunnel {
-	tun := &recordingTunnel{name: name, switchErr: f.switchErr, dialErrs: f.dialErrs}
+	dialErrs := f.dialErrs
+	if len(f.dialErrsByTunnel) > len(f.tunnels) {
+		dialErrs = f.dialErrsByTunnel[len(f.tunnels)]
+	}
+	tun := &recordingTunnel{name: name, switchErr: f.switchErr, dialErrs: dialErrs, dialErrByNode: f.dialErrByNode}
 	f.tunnels = append(f.tunnels, tun)
 	return tun
 }
 
 type recordingTunnel struct {
-	name         string
-	startedNode  node.Node
-	switchedNode node.Node
-	switchErr    error
-	dialErrs     int
-	dialCount    int
-	stopped      bool
+	name          string
+	startedNode   node.Node
+	switchedNode  node.Node
+	switchedNodes []string
+	switchErr     error
+	dialErrs      int
+	dialErrByNode map[string]error
+	dialCount     int
+	stopped       bool
 }
 
 func (t *recordingTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
@@ -565,12 +723,17 @@ func (t *recordingTunnel) Switch(ctx context.Context, n node.Node) error {
 	if t.switchErr != nil {
 		return t.switchErr
 	}
+	t.startedNode = n
 	t.switchedNode = n
+	t.switchedNodes = append(t.switchedNodes, n.ID)
 	return nil
 }
 
 func (t *recordingTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	t.dialCount++
+	if err := t.dialErrByNode[t.startedNode.ID]; err != nil {
+		return nil, err
+	}
 	if t.dialCount <= t.dialErrs {
 		return nil, fmt.Errorf("dial failed")
 	}
