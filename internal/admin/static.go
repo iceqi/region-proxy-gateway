@@ -187,7 +187,7 @@ const indexHTML = `<!doctype html>
           <a-form-item label="ID"><a-input v-model:value="channelForm.id" placeholder="jp-3000"></a-input></a-form-item>
           <a-form-item label="监听地址"><a-input v-model:value="channelForm.listen_host" placeholder="0.0.0.0"></a-input></a-form-item>
           <a-form-item label="端口"><a-input-number v-model:value="channelForm.listen_port" :min="1" :max="65535" style="width:100%"></a-input-number></a-form-item>
-          <a-form-item label="地区"><a-input v-model:value="channelForm.region" placeholder="jp/us/kr"></a-input></a-form-item>
+          <a-form-item label="地区"><a-input v-model:value="channelForm.region" placeholder="留空或 * 表示不限地区"></a-input></a-form-item>
           <a-form-item label="轮换分钟"><a-input-number v-model:value="channelForm.rotate_minutes" :min="0" style="width:100%"></a-input-number></a-form-item>
           <a-form-item label="模式">
             <a-select v-model:value="channelForm.selection_mode">
@@ -246,6 +246,7 @@ const indexHTML = `<!doctype html>
           proxyHost: window.location.hostname || 'SERVER_IP',
           activeTab: 'nodes',
           loading: false,
+          tickNow: Date.now(),
           updatingNodes: false,
           restarting: false,
           probingBatch: false,
@@ -277,7 +278,7 @@ const indexHTML = `<!doctype html>
           channelColumns: [
             { title: 'ID', dataIndex: 'id', width: 120 },
             { title: '端口', dataIndex: 'listen_port', width: 84 },
-            { title: '地区', dataIndex: 'region', width: 120, customRender: ({ record }) => this.regionText(record.region) + '（' + record.region + '）' },
+            { title: '地区', dataIndex: 'region', width: 120, customRender: ({ record }) => this.channelRegionText(record.region) },
             { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
@@ -317,13 +318,14 @@ const indexHTML = `<!doctype html>
         },
         switchDialogNodes() {
           if (!this.channelSwitchDialog.channel) return [];
-          const nodes = this.nodes.filter(n => n.region === this.channelSwitchDialog.channel.region);
+          const nodes = this.nodes.filter(n => this.matchChannelRegion(this.channelSwitchDialog.channel.region, n.region));
           return this.filterNodeList(nodes, this.switchFilters).slice(0, 200);
         }
       },
       mounted() {
         this.load();
         setInterval(() => this.load(false), 7000);
+        setInterval(() => { this.tickNow = Date.now(); }, 1000);
       },
       methods: {
         emptyChannelForm() {
@@ -529,10 +531,18 @@ const indexHTML = `<!doctype html>
         },
         channelsByRegion(region) {
           const target = this.normalizeRegion(region);
-          return this.channels.filter(ch => this.normalizeRegion(ch.region) === target && ch.enabled);
+          return this.channels.filter(ch => this.matchChannelRegion(ch.region, target) && ch.enabled);
         },
         normalizeRegion(region) {
           return String(region || '').trim().toLowerCase();
+        },
+        isAnyRegion(region) {
+          const normalized = this.normalizeRegion(region);
+          return normalized === '' || normalized === '*';
+        },
+        matchChannelRegion(channelRegion, nodeRegion) {
+          if (this.isAnyRegion(channelRegion)) return true;
+          return this.normalizeRegion(channelRegion) === this.normalizeRegion(nodeRegion);
         },
         channelExitAddress(channel) {
           const current = channel.current_node || {};
@@ -563,13 +573,16 @@ const indexHTML = `<!doctype html>
           if (!value) return '';
           const date = new Date(value);
           if (Number.isNaN(date.getTime())) return '';
-          const ms = date.getTime() - Date.now();
+          const ms = date.getTime() - this.tickNow;
           if (ms <= 0) return '即将';
-          const minutes = Math.ceil(ms / 60000);
-          if (minutes < 60) return minutes + ' 分钟';
+          const totalSeconds = Math.ceil(ms / 1000);
+          if (totalSeconds < 60) return totalSeconds + ' 秒';
+          const minutes = Math.floor(totalSeconds / 60);
+          const seconds = totalSeconds % 60;
+          if (minutes < 60) return minutes + ' 分钟 ' + seconds + ' 秒';
           const hours = Math.floor(minutes / 60);
           const rest = minutes % 60;
-          return hours + ' 小时' + (rest ? ' ' + rest + ' 分钟' : '');
+          return hours + ' 小时 ' + rest + ' 分钟 ' + seconds + ' 秒';
         },
         rotationStateLine(label, value) {
           return h('div', [h('span', { class: 'muted' }, label + '：'), h('span', { class: 'mono' }, value || '-')]);
@@ -674,6 +687,10 @@ const indexHTML = `<!doctype html>
             'United Kingdom': '英国'
           };
           return byRegion[value] || byCountry[country] || country || region || '';
+        },
+        channelRegionText(region) {
+          if (this.isAnyRegion(region)) return '不限地区（*）';
+          return this.regionText(region) + '（' + region + '）';
         },
         selectionModeText(mode) {
           return ({ auto: '自动优选', manual: '手动节点' })[mode] || mode || '';

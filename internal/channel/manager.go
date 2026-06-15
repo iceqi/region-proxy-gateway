@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -608,7 +609,7 @@ func (m *Manager) selectNode(ctx context.Context, ch config.Channel) (node.Node,
 		if !ok {
 			return node.Node{}, fmt.Errorf("manual node %q not found", ch.ManualNodeID)
 		}
-		if n.Region != ch.Region {
+		if !isAnyRegion(ch.Region) && n.Region != ch.Region {
 			return node.Node{}, fmt.Errorf("manual node %q is region %q, channel requires %q", n.ID, n.Region, ch.Region)
 		}
 		return n, nil
@@ -618,6 +619,11 @@ func (m *Manager) selectNode(ctx context.Context, ch config.Channel) (node.Node,
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
+}
+
+func isAnyRegion(region string) bool {
+	region = strings.ToLower(strings.TrimSpace(region))
+	return region == "" || region == "*"
 }
 
 func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, error) {

@@ -289,6 +289,74 @@ func TestManagerRotatesAutoChannelToBestAlternativeNode(t *testing.T) {
 	}
 }
 
+func TestManagerWildcardRegionCanStartAndRotateAcrossRegions(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 100, LatencyMS: 20, Available: true},
+		{ID: "us-a", Region: "us", Speed: 300, LatencyMS: 10, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "any-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "*",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	initial, _ := manager.Snapshot("any-3000")
+	if initial.CurrentNodeID != "us-a" {
+		t.Fatalf("current node = %q, want best any-region us-a", initial.CurrentNodeID)
+	}
+	if err := manager.RotateNow(context.Background(), "any-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+	snapshot, _ := manager.Snapshot("any-3000")
+	if snapshot.CurrentNodeID != "jp-a" {
+		t.Fatalf("current node = %q, want rotated cross-region jp-a", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerManualWildcardRegionAcceptsAnyNodeRegion(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{{ID: "us-a", Region: "us", Speed: 300, Available: true}})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "any-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "*",
+			SelectionMode: SelectionManual,
+			ManualNodeID:  "us-a",
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	snapshot, _ := manager.Snapshot("any-3000")
+	if snapshot.CurrentNodeID != "us-a" {
+		t.Fatalf("current node = %q, want manual us-a", snapshot.CurrentNodeID)
+	}
+}
+
 func TestManagerKeepsRunningWhenOneChannelCannotStart(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{{ID: "jp-a", Region: "jp", Available: true}})

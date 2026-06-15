@@ -1,6 +1,9 @@
 package node
 
-import "sync"
+import (
+	"strings"
+	"sync"
+)
 
 type Store struct {
 	mu    sync.RWMutex
@@ -54,11 +57,12 @@ func (s *Store) Update(id string, update func(Node) Node) bool {
 func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	anyRegion := isAnyRegion(region)
 
 	bestIndex := -1
 	bestAvoidedIndex := -1
 	for i, node := range s.nodes {
-		if !node.Available || node.Region != region {
+		if !node.Available || (!anyRegion && node.Region != region) {
 			continue
 		}
 
@@ -86,10 +90,11 @@ func (s *Store) BestByRegion(region, avoidID string) (Node, bool) {
 func (s *Store) CandidatesByRegion(region, avoidID string, limit int) []Node {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	anyRegion := isAnyRegion(region)
 
 	candidates := make([]Node, 0)
 	for _, node := range s.nodes {
-		if !node.Available || node.Region != region {
+		if !node.Available || (!anyRegion && node.Region != region) {
 			continue
 		}
 		if avoidID != "" && node.ID == avoidID {
@@ -102,6 +107,11 @@ func (s *Store) CandidatesByRegion(region, avoidID string, limit int) []Node {
 		return append([]Node(nil), candidates[:limit]...)
 	}
 	return append([]Node(nil), candidates...)
+}
+
+func isAnyRegion(region string) bool {
+	region = strings.ToLower(strings.TrimSpace(region))
+	return region == "" || region == "*"
 }
 
 func better(a, b Node) bool {

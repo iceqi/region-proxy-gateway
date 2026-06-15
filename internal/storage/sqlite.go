@@ -156,6 +156,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]config.Channel, error) {
 		if err := rows.Scan(&ch.ID, &ch.ListenHost, &ch.ListenPort, &ch.Region, &ch.RotateMinutes, &ch.SelectionMode, &ch.ManualNodeID, &enabled); err != nil {
 			return nil, err
 		}
+		ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 		ch.Enabled = enabled != 0
 		channels = append(channels, ch)
 	}

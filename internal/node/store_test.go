@@ -22,6 +22,34 @@ func TestBestByRegionReturnsLowestLatencyAvailableNode(t *testing.T) {
 	}
 }
 
+func TestBestByRegionSupportsAnyRegion(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-slow", Region: "jp", LatencyMS: 80, Available: true},
+		{ID: "us-fast", Region: "us", LatencyMS: 10, Available: true},
+	})
+
+	for _, region := range []string{"", "*"} {
+		got, ok := store.BestByRegion(region, "")
+		if !ok || got.ID != "us-fast" {
+			t.Fatalf("BestByRegion(%q) = %+v/%v, want us-fast", region, got, ok)
+		}
+	}
+}
+
+func TestCandidatesByRegionSupportsAnyRegion(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-1", Region: "jp", LatencyMS: 20, Available: true},
+		{ID: "us-1", Region: "us", LatencyMS: 10, Available: true},
+	})
+
+	got := store.CandidatesByRegion("*", "", 0)
+	if len(got) != 2 || got[0].ID != "us-1" || got[1].ID != "jp-1" {
+		t.Fatalf("CandidatesByRegion(*) = %+v, want all sorted nodes", got)
+	}
+}
+
 func TestBestByRegionPrefersMeasuredLatencyOverCSVSpeed(t *testing.T) {
 	store := NewStore()
 	store.Replace([]Node{

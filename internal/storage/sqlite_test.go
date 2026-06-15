@@ -84,6 +84,27 @@ func TestSQLiteStoreSaveChannelNormalizesRegion(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSaveChannelAllowsWildcardRegion(t *testing.T) {
+	store := openTestStore(t)
+	for _, region := range []string{"", " * "} {
+		ch := config.Channel{ID: "any-3000" + region, ListenHost: "0.0.0.0", ListenPort: 3000 + len(region), Region: region, SelectionMode: config.SelectionAuto, Enabled: true}
+		if err := store.SaveChannel(context.Background(), "", ch); err != nil {
+			t.Fatalf("SaveChannel region %q: %v", region, err)
+		}
+	}
+	channels, err := store.ListChannels(context.Background())
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, ch := range channels {
+		seen[ch.Region] = true
+	}
+	if !seen[""] || !seen["*"] {
+		t.Fatalf("channels = %+v, want empty and * regions", channels)
+	}
+}
+
 func TestSQLiteStoreReplacesAndListsNodes(t *testing.T) {
 	store := openTestStore(t)
 	nodes := []node.Node{

@@ -302,9 +302,6 @@ func (ch Channel) Validate() error {
 	if ch.ListenPort < 1 || ch.ListenPort > 65535 {
 		return fmt.Errorf("listen port must be 1-65535")
 	}
-	if ch.Region == "" {
-		return fmt.Errorf("region is required")
-	}
 	if ch.RotateMinutes < 0 {
 		return fmt.Errorf("rotate minutes must be >= 0")
 	}

@@ -76,7 +76,6 @@ func TestValidateRejectsInvalidChannel(t *testing.T) {
 	}{
 		{name: "empty id", mutate: func(ch *Channel) { ch.ID = "" }},
 		{name: "bad port", mutate: func(ch *Channel) { ch.ListenPort = 70000 }},
-		{name: "empty region", mutate: func(ch *Channel) { ch.Region = "" }},
 		{name: "negative rotate", mutate: func(ch *Channel) { ch.RotateMinutes = -1 }},
 		{name: "bad selection mode", mutate: func(ch *Channel) { ch.SelectionMode = "fastest-ish" }},
 		{name: "manual missing node", mutate: func(ch *Channel) {
@@ -93,6 +92,19 @@ func TestValidateRejectsInvalidChannel(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
+	}
+}
+
+func TestValidateAllowsWildcardChannelRegion(t *testing.T) {
+	cfg := Default()
+	cfg.Channels[0].Region = "*"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate wildcard region: %v", err)
+	}
+
+	cfg.Channels[0].Region = ""
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate empty wildcard region: %v", err)
 	}
 }
 
