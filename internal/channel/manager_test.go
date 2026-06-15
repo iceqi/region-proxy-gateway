@@ -357,6 +357,40 @@ func TestManagerManualWildcardRegionAcceptsAnyNodeRegion(t *testing.T) {
 	}
 }
 
+func TestManagerSwitchToNodeAllowsEmptyWildcardRegion(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Available: true},
+		{ID: "kr-a", Region: "kr", Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "any-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "",
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.SwitchToNode(context.Background(), "any-3000", "kr-a"); err != nil {
+		t.Fatalf("SwitchToNode should allow empty wildcard region: %v", err)
+	}
+	snapshot, _ := manager.Snapshot("any-3000")
+	if snapshot.CurrentNodeID != "kr-a" {
+		t.Fatalf("current node = %q, want kr-a", snapshot.CurrentNodeID)
+	}
+}
+
 func TestManagerKeepsRunningWhenOneChannelCannotStart(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{{ID: "jp-a", Region: "jp", Available: true}})

@@ -208,7 +208,7 @@ func (m *Manager) SwitchToNode(ctx context.Context, channelID, nodeID string) er
 	if !ok {
 		return fmt.Errorf("node %q not found", nodeID)
 	}
-	if n.Region != ch.cfg.Region {
+	if !isAnyRegion(ch.cfg.Region) && n.Region != ch.cfg.Region {
 		return fmt.Errorf("node %q is region %q, channel requires %q", nodeID, n.Region, ch.cfg.Region)
 	}
 	if ch.tunnel == nil {
