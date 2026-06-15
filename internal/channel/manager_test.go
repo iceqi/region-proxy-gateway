@@ -361,6 +361,50 @@ func TestManagerRotationFailureKeepsCurrentNode(t *testing.T) {
 	}
 }
 
+func TestManagerRotationRequiresDifferentNode(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{{ID: "jp-only", Region: "jp", Speed: 100, Available: true}})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	initial, _ := manager.Snapshot("jp-3000")
+	err := manager.RotateNow(context.Background(), "jp-3000")
+	if err == nil || !strings.Contains(err.Error(), "no alternative node") {
+		t.Fatalf("RotateNow error = %v, want no alternative node", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-only" {
+		t.Fatalf("current node = %q, want unchanged", snapshot.CurrentNodeID)
+	}
+	if snapshot.LastError == "" {
+		t.Fatalf("last error should be recorded")
+	}
+	if !snapshot.LastRotationAt.After(initial.LastRotationAt) {
+		t.Fatalf("last rotation attempt time should advance")
+	}
+	if !snapshot.NextRotationAt.Equal(snapshot.LastRotationAt.Add(10 * time.Minute)) {
+		t.Fatalf("next rotation = %v, want last attempt + interval", snapshot.NextRotationAt)
+	}
+}
+
 func TestManagerRetriesDialFailuresThenRotatesAutoChannel(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{

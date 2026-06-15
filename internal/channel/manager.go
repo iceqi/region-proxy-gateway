@@ -575,13 +575,18 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 	}
 	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID)
 	if err != nil {
-		ch.err = err.Error()
-		return err
+		ch.lastRotationAt = time.Now()
+		ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
+		return fmt.Errorf("%s: %w", ch.err, err)
 	}
 	if n.ID == ch.currentNode.ID {
-		return nil
+		now := time.Now()
+		ch.lastRotationAt = now
+		ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
+		return fmt.Errorf("%s", ch.err)
 	}
 	if err := ch.tunnel.Switch(ctx, n); err != nil {
+		ch.lastRotationAt = time.Now()
 		ch.err = err.Error()
 		return err
 	}
@@ -687,13 +692,16 @@ func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, curre
 		filtered = fallback
 	}
 	if len(filtered) == 0 {
-		return m.bestCheckedNode(ctx, ch.Region, currentNodeID)
+		return node.Node{}, false
 	}
 	best := filtered[0]
 	for _, candidate := range filtered[1:] {
 		if betterRotationNode(candidate, best, deepResults, recent) {
 			best = candidate
 		}
+	}
+	if best.ID == currentNodeID {
+		return node.Node{}, false
 	}
 	return best, true
 }

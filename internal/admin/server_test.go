@@ -527,6 +527,9 @@ func TestIndexReturnsHTML(t *testing.T) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
 	}
+	if !strings.Contains(rec.Body.String(), "date.getFullYear() <= 1") {
+		t.Fatalf("admin html should hide Go zero time values")
+	}
 }
 
 func TestIndexRedirectsToTrailingSlash(t *testing.T) {
