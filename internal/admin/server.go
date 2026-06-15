@@ -302,6 +302,7 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ch := body.Channel
+	ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 	if err := ch.Validate(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -732,6 +733,7 @@ func (s *Server) channelViewList() []channelView {
 
 	views := make([]channelView, 0, len(configured))
 	for _, ch := range configured {
+		ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 		snapshot, ok := runtimeByID[ch.ID]
 		if !ok {
 			snapshot = snapshotFromConfig(ch)

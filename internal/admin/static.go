@@ -202,6 +202,7 @@ const indexHTML = `<!doctype html>
 
       <a-modal v-model:open="nodeSwitchDialog.open" title="选择通道" width="560px" @ok="confirmNodeSwitch" ok-text="切换" cancel-text="取消">
         <a-alert v-if="nodeSwitchDialog.node" type="info" show-icon :message="'节点：' + nodeLabel(nodeSwitchDialog.node)" style="margin-bottom: 12px"></a-alert>
+        <div class="muted" style="margin-bottom: 8px">候选通道：{{ channelsByRegion(nodeSwitchDialog.node ? nodeSwitchDialog.node.region : '').length }}</div>
         <a-select v-model:value="nodeSwitchDialog.channelID" placeholder="请选择要切换的通道" style="width:100%">
           <a-select-option v-for="ch in channelsByRegion(nodeSwitchDialog.node ? nodeSwitchDialog.node.region : '')" :key="ch.id" :value="ch.id">{{ ch.id }} :{{ ch.listen_port }} / {{ ch.region }}</a-select-option>
         </a-select>
@@ -527,7 +528,11 @@ const indexHTML = `<!doctype html>
           }
         },
         channelsByRegion(region) {
-          return this.channels.filter(ch => ch.region === region && ch.enabled);
+          const target = this.normalizeRegion(region);
+          return this.channels.filter(ch => this.normalizeRegion(ch.region) === target && ch.enabled);
+        },
+        normalizeRegion(region) {
+          return String(region || '').trim().toLowerCase();
         },
         channelExitAddress(channel) {
           const current = channel.current_node || {};

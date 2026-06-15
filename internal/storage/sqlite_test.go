@@ -68,6 +68,22 @@ func TestSQLiteStoreUpsertRenameAndDeleteChannels(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreSaveChannelNormalizesRegion(t *testing.T) {
+	store := openTestStore(t)
+	ch := config.Channel{ID: "jp-3000", ListenHost: "0.0.0.0", ListenPort: 3000, Region: " JP ", SelectionMode: config.SelectionAuto, Enabled: true}
+	if err := store.SaveChannel(context.Background(), "", ch); err != nil {
+		t.Fatalf("SaveChannel: %v", err)
+	}
+
+	channels, err := store.ListChannels(context.Background())
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	if len(channels) != 1 || channels[0].Region != "jp" {
+		t.Fatalf("channels = %+v, want normalized region jp", channels)
+	}
+}
+
 func TestSQLiteStoreReplacesAndListsNodes(t *testing.T) {
 	store := openTestStore(t)
 	nodes := []node.Node{

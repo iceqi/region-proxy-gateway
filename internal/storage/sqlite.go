@@ -163,6 +163,7 @@ func (s *Store) ListChannels(ctx context.Context) ([]config.Channel, error) {
 }
 
 func (s *Store) SaveChannel(ctx context.Context, originalID string, ch config.Channel) error {
+	ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 	if err := ch.Validate(); err != nil {
 		return err
 	}
@@ -178,6 +179,7 @@ func (s *Store) SaveChannel(ctx context.Context, originalID string, ch config.Ch
 }
 
 func saveChannelTx(ctx context.Context, tx *sql.Tx, originalID string, ch config.Channel) error {
+	ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 	enabled := 0
 	if ch.Enabled {
 		enabled = 1
