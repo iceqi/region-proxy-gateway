@@ -31,6 +31,11 @@ const indexHTML = `<!doctype html>
     .hero-title { font-size: 18px; font-weight: 800; color: #0f172a; }
     .hero-subtitle { color: #64748b; margin-top: 4px; }
     .signal-dot { width: 10px; height: 10px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 6px rgba(34,197,94,.14); display: inline-block; margin-right: 8px; }
+    .login-wrap { min-height: calc(100vh - 76px); display: grid; place-items: center; padding: 32px 16px; }
+    .login-card { width: min(440px, 100%); border: 1px solid rgba(203,213,225,.86); border-radius: 22px; padding: 28px; background: rgba(255,255,255,.94); box-shadow: 0 24px 70px rgba(15, 23, 42, .14); }
+    .login-card h2 { margin: 0; font-size: 24px; color: #0f172a; }
+    .login-card p { margin: 8px 0 22px; color: #64748b; }
+    .login-form { display: grid; gap: 14px; }
     .stats { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
     .stat { background: rgba(255,255,255,.92); border: 1px solid rgba(203, 213, 225, .78); border-radius: 16px; padding: 16px; box-shadow: 0 14px 34px rgba(23, 32, 51, .07); }
     .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
@@ -82,13 +87,27 @@ const indexHTML = `<!doctype html>
         <span>{{ apiBase }}</span>
       </div>
       <a-space>
-        <a-button :loading="loading" @click="load">刷新</a-button>
-        <a-button type="primary" :loading="updatingNodes" @click="updateNodes">更新节点</a-button>
-        <a-button danger :loading="restarting" @click="restartService">重启服务</a-button>
+        <a-button v-if="isLoggedIn" :loading="loading" @click="load">刷新</a-button>
+        <a-button v-if="isLoggedIn" type="primary" :loading="updatingNodes" @click="updateNodes">更新节点</a-button>
+        <a-button v-if="isLoggedIn" danger :loading="restarting" @click="restartService">重启服务</a-button>
+        <a-button v-if="isLoggedIn" @click="logout">退出登录</a-button>
       </a-space>
     </header>
 
-    <main class="page">
+    <section v-if="!isLoggedIn" class="login-wrap">
+      <div class="login-card">
+        <h2>登录管理后台</h2>
+        <p>使用后台管理账号登录。可选择本地浏览器记住账号密码。</p>
+        <div class="login-form">
+          <a-input v-model:value="loginForm.username" size="large" placeholder="后台账号" @press-enter="login"></a-input>
+          <a-input-password v-model:value="loginForm.password" size="large" placeholder="后台密码" @press-enter="login"></a-input-password>
+          <a-checkbox v-model:checked="loginForm.rememberCredentials">本地记住账号密码</a-checkbox>
+          <a-button type="primary" size="large" :loading="loginLoading" @click="login">登录</a-button>
+        </div>
+      </div>
+    </section>
+
+    <main v-else class="page">
       <section class="hero-strip">
         <div>
           <div class="hero-title"><span class="signal-dot"></span>代理通道控制台</div>
@@ -260,6 +279,10 @@ const indexHTML = `<!doctype html>
       data() {
         return {
           apiBase,
+          isLoggedIn: false,
+          loginLoading: false,
+          adminAuth: { username: '', password: '' },
+          loginForm: { username: '', password: '', rememberCredentials: false },
           proxyHost: window.location.hostname || 'SERVER_IP',
           activeTab: 'nodes',
           loading: false,
@@ -340,11 +363,56 @@ const indexHTML = `<!doctype html>
         }
       },
       mounted() {
-        this.load();
+        this.restoreLogin();
+        if (this.isLoggedIn) this.load();
         setInterval(() => this.load(false), 7000);
         setInterval(() => { this.tickNow = Date.now(); }, 1000);
       },
       methods: {
+        restoreLogin() {
+          const raw = localStorage.getItem('regionProxyGatewayAdminAuth');
+          if (!raw) return;
+          try {
+            const saved = JSON.parse(raw);
+            if (!saved.username || !saved.password) return;
+            this.loginForm = { username: saved.username, password: saved.password, rememberCredentials: true };
+            this.adminAuth = { username: saved.username, password: saved.password };
+            this.isLoggedIn = true;
+          } catch (err) {
+            localStorage.removeItem('regionProxyGatewayAdminAuth');
+          }
+        },
+        async login() {
+          const username = String(this.loginForm.username || '').trim();
+          const password = String(this.loginForm.password || '');
+          if (!username || !password) return message.warning('请输入后台账号和密码');
+          this.loginLoading = true;
+          this.adminAuth = { username, password };
+          try {
+            await this.request('status');
+            this.isLoggedIn = true;
+            if (this.loginForm.rememberCredentials) {
+              localStorage.setItem('regionProxyGatewayAdminAuth', JSON.stringify({ username, password }));
+            } else {
+              localStorage.removeItem('regionProxyGatewayAdminAuth');
+            }
+            message.success('登录成功');
+            await this.load(false);
+          } catch (err) {
+            this.isLoggedIn = false;
+            message.error(err.message === 'unauthorized' ? '账号或密码错误' : err.message);
+          } finally {
+            this.loginLoading = false;
+          }
+        },
+        logout() {
+          this.isLoggedIn = false;
+          this.adminAuth = { username: '', password: '' };
+          this.loginForm.password = '';
+          this.loginForm.rememberCredentials = false;
+          localStorage.removeItem('regionProxyGatewayAdminAuth');
+          message.success('已退出登录');
+        },
         emptyChannelForm() {
           return { id: '', listen_host: '0.0.0.0', listen_port: 3000, region: '', rotate_minutes: 0, selection_mode: 'auto', manual_node_id: '', enabled: true };
         },
@@ -364,6 +432,7 @@ const indexHTML = `<!doctype html>
           });
         },
         async load(showLoading = true) {
+          if (!this.isLoggedIn) return;
           if (showLoading) this.loading = true;
           try {
             const [status, channels, connections, nodes, deepStatus] = await Promise.all([
@@ -385,8 +454,16 @@ const indexHTML = `<!doctype html>
           }
         },
         async request(path, options = {}) {
-          const res = await fetch(apiBase + path.replace(/^\//, ''), Object.assign({ headers: { 'Content-Type': 'application/json' } }, options));
+          const headers = Object.assign({ 'Content-Type': 'application/json' }, options.headers || {});
+          if (this.adminAuth.username || this.adminAuth.password) {
+            headers.Authorization = 'Basic ' + btoa(unescape(encodeURIComponent(this.adminAuth.username + ':' + this.adminAuth.password)));
+          }
+          const res = await fetch(apiBase + path.replace(/^\//, ''), Object.assign({}, options, { headers }));
           const body = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            this.isLoggedIn = false;
+            throw new Error(body.error || 'unauthorized');
+          }
           if (!res.ok) throw new Error(body.error || '请求失败');
           return body;
         },

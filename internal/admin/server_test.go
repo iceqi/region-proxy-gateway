@@ -522,7 +522,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "rememberCredentials", "adminAuth"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
@@ -572,11 +572,21 @@ func TestAdminAuthProtectsPanelAndAPI(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	server := NewServer(manager, nodes, nil, WithAdminAuth("admin", "secret"))
 
+	panelReq := httptest.NewRequest(http.MethodGet, "/admin/", nil)
+	panelRec := httptest.NewRecorder()
+	server.ServeHTTP(panelRec, panelReq)
+	if panelRec.Code != http.StatusOK {
+		t.Fatalf("panel status without auth = %d, want 200 login page shell", panelRec.Code)
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status without auth = %d, want 401", rec.Code)
+	}
+	if rec.Header().Get("WWW-Authenticate") != "" {
+		t.Fatalf("unauthorized API should not trigger browser basic auth dialog")
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/admin/api/nodes", nil)

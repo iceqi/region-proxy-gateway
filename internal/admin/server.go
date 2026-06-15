@@ -110,10 +110,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == adminPath+"/" {
-		if !s.authorized(r) {
-			s.writeUnauthorized(w)
-			return
-		}
 		s.writeHTML(w, http.StatusOK, indexHTML)
 		return
 	}
@@ -235,7 +231,6 @@ func (s *Server) currentAdminAuth() (string, string, string) {
 }
 
 func (s *Server) writeUnauthorized(w http.ResponseWriter) {
-	w.Header().Set("WWW-Authenticate", `Basic realm="Region Proxy Gateway"`)
 	s.writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 }
 
