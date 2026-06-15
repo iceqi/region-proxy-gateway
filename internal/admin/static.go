@@ -58,17 +58,39 @@ const indexHTML = `<!doctype html>
     .login-form .ant-btn-primary { height: 46px; border-radius: 13px; font-weight: 750; background: linear-gradient(135deg, #0ea5e9, #10b981); box-shadow: 0 16px 30px rgba(14,165,233,.22); }
     .login-tip { margin-top: 18px; padding: 12px 14px; border-radius: 16px; background: #f0f9ff; border: 1px solid #dbeafe; color: #475569; font-size: 12px; line-height: 1.65; }
     .stats { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
-    .stat { background: rgba(255,255,255,.92); border: 1px solid rgba(203, 213, 225, .78); border-radius: 16px; padding: 16px; box-shadow: 0 14px 34px rgba(23, 32, 51, .07); }
-    .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
-    .stat-value { font-size: 24px; font-weight: 760; color: #111827; }
-    .content-panel { background: rgba(255,255,255,.94); border: 1px solid rgba(203,213,225,.84); border-radius: 18px; box-shadow: 0 18px 48px rgba(23, 32, 51, .08); overflow: hidden; }
-    .content-panel .ant-tabs-nav { padding: 0 24px; margin: 0 !important; background: #fff; border-bottom: 1px solid #edf1f6; }
-    .content-panel .ant-tabs-content-holder { padding: 20px 24px 24px; }
-    .card { background: #fff; border: 1px solid rgba(203,213,225,.82); border-radius: 16px; margin-bottom: 0; overflow: hidden; }
-    .card-head { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf1f6; background: linear-gradient(180deg, #fbfdff 0%, #f7faff 100%); }
-    .card-title { font-size: 16px; font-weight: 760; }
-    .card-body { padding: 18px; }
-    .filter-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .stat { background: linear-gradient(145deg, rgba(255,255,255,.96), rgba(241,247,255,.9)); border: 1px solid rgba(203, 213, 225, .78); border-radius: 18px; padding: 16px; box-shadow: 0 16px 38px rgba(23, 32, 51, .08); position: relative; overflow: hidden; }
+    .stat::after { content: ''; position: absolute; width: 72px; height: 72px; right: -26px; top: -26px; border-radius: 50%; background: rgba(14,165,233,.11); }
+    .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; position: relative; z-index: 1; }
+    .stat-value { font-size: 24px; font-weight: 780; color: #111827; position: relative; z-index: 1; }
+    .content-panel { background: rgba(255,255,255,.72); border: 1px solid rgba(203,213,225,.84); border-radius: 24px; box-shadow: 0 24px 70px rgba(23, 32, 51, .11); overflow: hidden; backdrop-filter: blur(14px); }
+    .content-panel .ant-tabs-nav { padding: 10px 18px 0; margin: 0 !important; background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(248,251,255,.92)); border-bottom: 1px solid #e6edf7; }
+    .content-panel .ant-tabs-tab { padding: 13px 16px !important; border-radius: 14px 14px 0 0; font-weight: 700; }
+    .content-panel .ant-tabs-tab-active { background: #eef7ff; }
+    .content-panel .ant-tabs-ink-bar { height: 3px; border-radius: 999px; background: linear-gradient(90deg, #0ea5e9, #10b981); }
+    .content-panel .ant-tabs-content-holder { padding: 22px 24px 24px; }
+    .card { background: #fff; border: 1px solid rgba(203,213,225,.82); border-radius: 22px; margin-bottom: 0; overflow: hidden; box-shadow: 0 18px 46px rgba(15,23,42,.07); }
+    .card-head { padding: 20px 22px; display: flex; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid #eaf0f7; background: radial-gradient(circle at 96% 0%, rgba(34,197,94,.13), transparent 32%), linear-gradient(135deg, #fbfdff 0%, #f4f9ff 100%); }
+    .card-heading { display: flex; align-items: center; gap: 13px; min-width: 0; }
+    .section-icon { width: 42px; height: 42px; border-radius: 15px; display: grid; place-items: center; color: #fff; font-size: 20px; box-shadow: 0 14px 28px rgba(14,165,233,.18); flex: none; }
+    .section-icon.nodes { background: linear-gradient(135deg, #0ea5e9, #2563eb); }
+    .section-icon.channels { background: linear-gradient(135deg, #10b981, #0f766e); }
+    .section-icon.connections { background: linear-gradient(135deg, #8b5cf6, #2563eb); }
+    .section-icon.settings { background: linear-gradient(135deg, #f97316, #ef4444); }
+    .card-title { font-size: 17px; font-weight: 800; color: #0f172a; }
+    .card-subtitle { color: #64748b; margin-top: 4px; line-height: 1.55; }
+    .card-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+    .module-chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 999px; background: #f0f9ff; border: 1px solid #dbeafe; color: #075985; font-size: 12px; font-weight: 700; }
+    .module-chip.green { background: #ecfdf5; border-color: #bbf7d0; color: #047857; }
+    .module-chip.purple { background: #f5f3ff; border-color: #ddd6fe; color: #6d28d9; }
+    .card-body { padding: 20px 22px 22px; background: linear-gradient(180deg, #fff, #fbfdff); }
+    .filter-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; margin-bottom: 14px; padding: 12px; border: 1px solid #e6edf7; border-radius: 16px; background: #f8fbff; }
+    .table-shell { border: 1px solid #e6edf7; border-radius: 16px; overflow: hidden; background: #fff; }
+    .table-shell .ant-table-thead > tr > th { background: #f7fbff !important; color: #334155; font-weight: 760; }
+    .table-shell .ant-table-tbody > tr:hover > td { background: #f8fcff !important; }
+    .settings-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    .settings-item { padding: 14px 14px 6px; border: 1px solid #e6edf7; border-radius: 18px; background: linear-gradient(180deg, #fff, #f8fbff); }
+    .settings-item .ant-form-item { margin-bottom: 10px; }
+    .settings-save { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-radius: 18px; background: #f8fbff; border: 1px solid #e6edf7; }
     .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
     .muted { color: #697386; }
@@ -88,7 +110,7 @@ const indexHTML = `<!doctype html>
     .topbar .ant-btn-default:hover { border-color: #8fb7ff; color: #fff; background: rgba(255,255,255,.14); }
     @media (max-width: 1100px) {
       .stats { grid-template-columns: 1fr 1fr; }
-      .filter-grid, .modal-filter { grid-template-columns: 1fr 1fr; }
+      .filter-grid, .modal-filter, .settings-grid { grid-template-columns: 1fr 1fr; }
       .login-stage { grid-template-columns: 1fr; max-width: 560px; }
       .login-visual { min-height: 360px; }
     }
@@ -98,10 +120,13 @@ const indexHTML = `<!doctype html>
       .login-wrap { padding: 22px 12px; }
       .login-visual { display: none; }
       .login-card { padding: 24px; border-radius: 22px; }
-      .stats, .filter-grid, .modal-grid, .modal-filter { grid-template-columns: 1fr; }
+      .stats, .filter-grid, .modal-grid, .modal-filter, .settings-grid { grid-template-columns: 1fr; }
+      .card-head, .settings-save { align-items: stretch; flex-direction: column; }
+      .card-actions { justify-content: flex-start; }
       .connection-line { grid-template-columns: 1fr; }
-      .content-panel .ant-tabs-nav { padding: 0 12px; }
+      .content-panel .ant-tabs-nav { padding: 8px 10px 0; }
       .content-panel .ant-tabs-content-holder { padding: 12px; }
+      .card-body { padding: 14px; }
     }
   </style>
 </head>
@@ -171,19 +196,24 @@ const indexHTML = `<!doctype html>
 
       <a-tabs class="content-panel" v-model:active-key="activeTab">
         <a-tab-pane key="nodes" tab="节点">
-          <section class="card">
+          <section class="card module-card nodes-card">
             <div class="card-head">
-              <div>
-                <div class="card-title">节点列表</div>
-                <div class="muted">点击切换会弹窗选择通道，然后把该通道切到当前节点</div>
+              <div class="card-heading">
+                <div class="section-icon nodes">◎</div>
+                <div>
+                  <div class="card-title">节点雷达</div>
+                  <div class="card-subtitle">按地区、IP 类型、质量和延迟筛选节点；切换时可指定目标通道。</div>
+                </div>
               </div>
-              <a-space>
+              <div class="card-actions">
+                <span class="module-chip">可见 {{ visibleNodes.length }}</span>
+                <span class="module-chip green">地区 {{ regions.length }}</span>
                 <a-button :loading="probingBatch" @click="probeVisibleNodes">测试当前列表延迟</a-button>
                 <a-button type="primary" :loading="deepTesting" @click="enqueueDeepTestVisibleNodes">深度测试当前列表</a-button>
-              </a-space>
+              </div>
             </div>
             <div class="card-body">
-              <div class="filter-grid">
+              <div class="filter-grid module-filter">
                 <a-select v-model:value="filters.region" allow-clear placeholder="地区">
                   <a-select-option v-for="item in regions" :key="item" :value="item">{{ regionText(item) }}（{{ item }}）</a-select-option>
                 </a-select>
@@ -208,51 +238,75 @@ const indexHTML = `<!doctype html>
                 <a-input-number v-model:value="filters.limit" :min="10" :max="500" :step="10" style="width:100%"></a-input-number>
               </div>
 
-              <a-table :columns="nodeColumns" :data-source="visibleNodes" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1280, y: 620 }"></a-table>
+              <div class="table-shell nodes-table-shell"><a-table :columns="nodeColumns" :data-source="visibleNodes" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1280, y: 620 }"></a-table></div>
             </div>
           </section>
         </a-tab-pane>
 
         <a-tab-pane key="channels" tab="通道">
-          <section class="card">
+          <section class="card module-card channels-card">
             <div class="card-head">
-              <div>
-                <div class="card-title">通道列表</div>
-                <div class="muted">连接方式展示 HTTP、SOCKS5 和无协议账号串，方便复制到不同客户端。</div>
+              <div class="card-heading">
+                <div class="section-icon channels">⇄</div>
+                <div>
+                  <div class="card-title">通道控制</div>
+                  <div class="card-subtitle">集中查看端口、出口、轮换状态和三种连接串，复制更顺手。</div>
+                </div>
               </div>
-              <a-button type="primary" @click="openChannelDialog()">新增通道</a-button>
+              <div class="card-actions">
+                <span class="module-chip green">{{ channels.length }} 个通道</span>
+                <a-button type="primary" @click="openChannelDialog()">新增通道</a-button>
+              </div>
             </div>
             <div class="card-body">
-              <a-table :columns="channelColumns" :data-source="channels" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1480 }"></a-table>
+              <div class="table-shell channels-table-shell"><a-table :columns="channelColumns" :data-source="channels" :row-key="record => record.id" size="small" bordered :pagination="false" :scroll="{ x: 1480 }"></a-table></div>
             </div>
           </section>
         </a-tab-pane>
 
         <a-tab-pane key="connections" tab="在线连接">
-          <section class="card">
-            <div class="card-head"><div class="card-title">在线连接</div></div>
+          <section class="card module-card connections-card">
+            <div class="card-head">
+              <div class="card-heading">
+                <div class="section-icon connections">●</div>
+                <div>
+                  <div class="card-title">实时连接</div>
+                  <div class="card-subtitle">观察当前客户端、目标地址和所使用的代理通道。</div>
+                </div>
+              </div>
+              <div class="card-actions"><span class="module-chip purple">在线 {{ connections.length }}</span></div>
+            </div>
             <div class="card-body">
-              <a-table :columns="connectionColumns" :data-source="connections" :row-key="record => record.id" size="small" bordered :pagination="false"></a-table>
+              <div class="table-shell connections-table-shell"><a-table :columns="connectionColumns" :data-source="connections" :row-key="record => record.id" size="small" bordered :pagination="false"></a-table></div>
             </div>
           </section>
         </a-tab-pane>
 
         <a-tab-pane key="settings" tab="设置">
-          <section class="card">
-            <div class="card-head"><div class="card-title">访问与认证</div></div>
-            <div class="card-body">
-              <div class="modal-grid">
-                <a-form-item label="登录入口"><a-input v-model:value="settings.admin_path" placeholder="/admin-xxxx"></a-input></a-form-item>
-                <a-form-item label="后台账号"><a-input v-model:value="settings.admin_username" placeholder="admin"></a-input></a-form-item>
-                <a-form-item label="后台新密码"><a-input-password v-model:value="settings.admin_password" placeholder="留空则不修改"></a-input-password></a-form-item>
-                <a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item>
-                <a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item>
-                <a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item>
+          <section class="card module-card settings-card">
+            <div class="card-head">
+              <div class="card-heading">
+                <div class="section-icon settings">⚙</div>
+                <div>
+                  <div class="card-title">访问与认证</div>
+                  <div class="card-subtitle">修改管理入口、后台账号、代理账号和节点刷新间隔。</div>
+                </div>
               </div>
-              <a-space wrap>
-                <a-button type="primary" @click="saveSettings">保存设置</a-button>
+              <div class="card-actions"><span class="module-chip">热更新配置</span></div>
+            </div>
+            <div class="card-body">
+              <div class="settings-grid">
+                <div class="settings-item"><a-form-item label="登录入口"><a-input v-model:value="settings.admin_path" placeholder="/admin-xxxx"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="后台账号"><a-input v-model:value="settings.admin_username" placeholder="admin"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="后台新密码"><a-input-password v-model:value="settings.admin_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
+                <div class="settings-item"><a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
+                <div class="settings-item"><a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item></div>
+              </div>
+              <div class="settings-save">
                 <span class="muted">密码不会回显；代理账号密码保存后立即热更新，登录入口和后台账号下次请求立即生效。</span>
-              </a-space>
+                <a-button type="primary" @click="saveSettings">保存设置</a-button>
+              </div>
             </div>
           </section>
         </a-tab-pane>

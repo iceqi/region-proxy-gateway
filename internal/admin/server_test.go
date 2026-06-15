@@ -522,7 +522,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "rememberCredentials", "adminAuth"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "module-card", "section-icon", "module-chip", "table-shell", "settings-grid", "settings-save", "rememberCredentials", "adminAuth"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
