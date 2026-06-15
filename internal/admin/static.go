@@ -18,24 +18,28 @@ const indexHTML = `<!doctype html>
   <script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.13/plugin/weekday.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/ant-design-vue@4.2.6/dist/antd.min.js"></script>
   <style>
-    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f2f6fb; }
-    body { margin: 0; background: #f2f6fb; }
+    :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #eef4fb; }
+    body { margin: 0; background: radial-gradient(circle at top left, #dceaff 0, transparent 34%), linear-gradient(135deg, #f7fbff 0%, #edf3fb 48%, #f5f7fb 100%); }
     [v-cloak] { display: none; }
-    .shell { min-height: 100vh; background: #f2f6fb; }
-    .topbar { position: sticky; top: 0; z-index: 20; min-height: 76px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: #162233; border-bottom: 1px solid rgba(255,255,255,.08); box-shadow: 0 10px 28px rgba(18, 32, 52, .18); }
+    .shell { min-height: 100vh; background: transparent; }
+    .topbar { position: sticky; top: 0; z-index: 20; min-height: 76px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: linear-gradient(135deg, #101827 0%, #182a44 52%, #0f766e 130%); border-bottom: 1px solid rgba(255,255,255,.10); box-shadow: 0 18px 44px rgba(15, 23, 42, .22); }
     .brand { display: grid; gap: 4px; min-width: 0; color: #fff; }
     .brand h1 { margin: 0; font-size: 21px; font-weight: 750; letter-spacing: 0; }
     .brand span { color: #aebbd0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .page { max-width: 1560px; margin: 0 auto; padding: 28px 24px 40px; }
+    .hero-strip { margin-bottom: 18px; padding: 18px 20px; border: 1px solid rgba(148, 163, 184, .28); border-radius: 18px; background: linear-gradient(135deg, rgba(255,255,255,.92), rgba(240,247,255,.82)); box-shadow: 0 18px 48px rgba(30, 41, 59, .08); display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .hero-title { font-size: 18px; font-weight: 800; color: #0f172a; }
+    .hero-subtitle { color: #64748b; margin-top: 4px; }
+    .signal-dot { width: 10px; height: 10px; border-radius: 999px; background: #22c55e; box-shadow: 0 0 0 6px rgba(34,197,94,.14); display: inline-block; margin-right: 8px; }
     .stats { display: grid; grid-template-columns: repeat(6, minmax(150px, 1fr)); gap: 14px; margin-bottom: 20px; }
-    .stat { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; padding: 16px; box-shadow: 0 10px 24px rgba(23, 32, 51, .06); }
+    .stat { background: rgba(255,255,255,.92); border: 1px solid rgba(203, 213, 225, .78); border-radius: 16px; padding: 16px; box-shadow: 0 14px 34px rgba(23, 32, 51, .07); }
     .stat-label { color: #697386; font-size: 12px; margin-bottom: 8px; }
     .stat-value { font-size: 24px; font-weight: 760; color: #111827; }
-    .content-panel { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; box-shadow: 0 14px 30px rgba(23, 32, 51, .07); overflow: hidden; }
+    .content-panel { background: rgba(255,255,255,.94); border: 1px solid rgba(203,213,225,.84); border-radius: 18px; box-shadow: 0 18px 48px rgba(23, 32, 51, .08); overflow: hidden; }
     .content-panel .ant-tabs-nav { padding: 0 24px; margin: 0 !important; background: #fff; border-bottom: 1px solid #edf1f6; }
     .content-panel .ant-tabs-content-holder { padding: 20px 24px 24px; }
-    .card { background: #fff; border: 1px solid #dfe7f0; border-radius: 8px; margin-bottom: 0; overflow: hidden; }
-    .card-head { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf1f6; background: #fbfcfe; }
+    .card { background: #fff; border: 1px solid rgba(203,213,225,.82); border-radius: 16px; margin-bottom: 0; overflow: hidden; }
+    .card-head { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #edf1f6; background: linear-gradient(180deg, #fbfdff 0%, #f7faff 100%); }
     .card-title { font-size: 16px; font-weight: 760; }
     .card-body { padding: 18px; }
     .filter-grid { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -45,7 +49,8 @@ const indexHTML = `<!doctype html>
     .host-cell { display: grid; gap: 3px; overflow-wrap: anywhere; }
     .action-row { display: flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
     .connection-box { display: grid; gap: 8px; }
-    .connection-line { display: grid; grid-template-columns: 66px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px; border: 1px solid #e6ecf3; background: #f8fafc; border-radius: 8px; min-width: 0; }
+    .connection-line { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid #dbe5f0; background: linear-gradient(135deg, #f8fbff, #f1f6fb); border-radius: 12px; min-width: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.78); }
+    .connection-line:hover { border-color: #93c5fd; background: #f8fbff; }
     .connection-line code { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #0f172a; }
     .modal-filter { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .ant-tabs-nav { margin-bottom: 0 !important; }
@@ -84,6 +89,18 @@ const indexHTML = `<!doctype html>
     </header>
 
     <main class="page">
+      <section class="hero-strip">
+        <div>
+          <div class="hero-title"><span class="signal-dot"></span>代理通道控制台</div>
+          <div class="hero-subtitle">统一管理节点、轮换、出口 IP 与连接串，保存后尽量热更新不中断服务。</div>
+        </div>
+        <a-space wrap>
+          <a-tag color="blue">{{ channels.length }} 个通道</a-tag>
+          <a-tag color="green">{{ connections.length }} 个在线连接</a-tag>
+          <a-tag color="purple">{{ filteredNodes.length }} 个可见节点</a-tag>
+        </a-space>
+      </section>
+
       <section class="stats">
         <div class="stat"><div class="stat-label">通道</div><div class="stat-value">{{ channels.length }}</div></div>
         <div class="stat"><div class="stat-label">节点</div><div class="stat-value">{{ filteredNodes.length }} / {{ nodes.length }}</div></div>
@@ -142,7 +159,7 @@ const indexHTML = `<!doctype html>
             <div class="card-head">
               <div>
                 <div class="card-title">通道列表</div>
-                <div class="muted">连接方式会展示带账号密码的 HTTP 和 SOCKS5 地址</div>
+                <div class="muted">连接方式展示 HTTP、SOCKS5 和无协议账号串，方便复制到不同客户端。</div>
               </div>
               <a-button type="primary" @click="openChannelDialog()">新增通道</a-button>
             </div>
@@ -283,7 +300,7 @@ const indexHTML = `<!doctype html>
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
             { title: '轮换状态', key: 'rotation', width: 360, customRender: ({ record }) => this.rotationStateCell(record) },
-            { title: '连接方式', key: 'connect', width: 560, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5'))]) },
+            { title: '连接方式', key: 'connect', width: 660, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5')), this.connectionLine('NO-SCHEME', this.proxyAddressNoScheme(record))]) },
             { title: '操作', key: 'actions', width: 170, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
           ],
           connectionColumns: [
@@ -665,6 +682,21 @@ const indexHTML = `<!doctype html>
           } catch (err) {
             const port = channel.listen_port || '';
             return scheme + '://' + this.proxyHost + (port ? ':' + port : '');
+          }
+        },
+        proxyAddressNoScheme(channel) {
+          const source = channel.proxy_auth_http || channel.proxy_auth_socks5 || channel.proxy_url_http || channel.proxy_url_socks5 || '';
+          if (!source) return '';
+          try {
+            const url = new URL(source);
+            const host = (url.hostname === '0.0.0.0' || url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::')
+              ? (window.location.hostname || url.hostname)
+              : url.hostname;
+            const auth = url.username || url.password ? decodeURIComponent(url.username) + ':' + decodeURIComponent(url.password) + '@' : '';
+            return auth + host + (url.port ? ':' + url.port : '');
+          } catch (err) {
+            const http = this.proxyAddress(channel, 'http');
+            return http.replace(/^https?:\/\//, '').replace(/^socks5:\/\//, '');
           }
         },
         ipTypeText(type) {
