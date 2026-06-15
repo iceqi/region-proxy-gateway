@@ -168,6 +168,12 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		return services{}, err
 	}
 	reloadRuntime := func(ctx context.Context) error {
+		nextCfg, err := config.Load(cfgPath)
+		if err == nil {
+			proxyRuntime.SetCredentials(nextCfg.ProxyUsername, nextCfg.ProxyPassword)
+		} else {
+			log.Printf("reload config for proxy credentials failed: %v", err)
+		}
 		nextChannels, err := database.ListChannels(ctx)
 		if err != nil {
 			return err
@@ -298,6 +304,16 @@ func (r *proxyRuntime) Sync(ctx context.Context, channels []config.Channel) erro
 		log.Printf("proxy channel %s listening on %s", ch.ID, addr)
 	}
 	return nil
+}
+
+func (r *proxyRuntime) SetCredentials(username string, password string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.proxyUsername = username
+	r.proxyPassword = password
+	for _, entry := range r.entries {
+		entry.server.SetCredentials(username, password)
+	}
 }
 
 func (r *proxyRuntime) Stop(ctx context.Context) error {

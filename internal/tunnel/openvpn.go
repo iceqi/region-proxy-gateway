@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -23,6 +24,8 @@ type OpenVPNProcess interface {
 type OpenVPNProcessStarter interface {
 	Start(ctx context.Context, command []string) (OpenVPNProcess, error)
 }
+
+type DeviceWaiter func(ctx context.Context, deviceName string, timeout time.Duration) error
 
 type ExecOpenVPNProcessStarter struct{}
 
@@ -98,11 +101,13 @@ func OpenVPNCommand(binary string, configPath string, deviceName string) []strin
 }
 
 type OpenVPNConfig struct {
-	DataDir      string
-	Command      string
-	Starter      OpenVPNProcessStarter
-	DeviceDialer DeviceDialer
-	StopTimeout  time.Duration
+	DataDir          string
+	Command          string
+	Starter          OpenVPNProcessStarter
+	DeviceDialer     DeviceDialer
+	DeviceWaiter     DeviceWaiter
+	ReadinessTimeout time.Duration
+	StopTimeout      time.Duration
 }
 
 type OpenVPN struct {
@@ -118,11 +123,22 @@ type OpenVPN struct {
 }
 
 func NewOpenVPN(cfg OpenVPNConfig) *OpenVPN {
+	useSystemStarter := cfg.Starter == nil
 	if cfg.Starter == nil {
 		cfg.Starter = ExecOpenVPNProcessStarter{}
 	}
 	if cfg.DeviceDialer == nil {
 		cfg.DeviceDialer = SystemDeviceDialer{}
+	}
+	if cfg.DeviceWaiter == nil {
+		if useSystemStarter {
+			cfg.DeviceWaiter = waitForDeviceReady
+		} else {
+			cfg.DeviceWaiter = assumeDeviceReady
+		}
+	}
+	if cfg.ReadinessTimeout == 0 {
+		cfg.ReadinessTimeout = 30 * time.Second
 	}
 	if cfg.StopTimeout == 0 {
 		cfg.StopTimeout = 5 * time.Second
@@ -132,31 +148,37 @@ func NewOpenVPN(cfg OpenVPNConfig) *OpenVPN {
 
 func (o *OpenVPN) Start(ctx context.Context, n node.Node, opts Options) error {
 	o.mu.Lock()
-	defer o.mu.Unlock()
 
 	if o.process != nil {
 		err := fmt.Errorf("openvpn tunnel %q is already started", o.status.Name)
 		o.status.Error = err.Error()
+		o.mu.Unlock()
 		return err
 	}
 	if n.OpenVPN == "" {
 		err := fmt.Errorf("node %q has empty openvpn config", n.ID)
 		o.status.Error = err.Error()
+		o.mu.Unlock()
 		return err
 	}
 	if opts.Name == "" {
 		opts.Name = n.ID
+	}
+	if opts.DeviceName == "" {
+		opts.DeviceName = "rpg0"
 	}
 
 	dataDir := firstNonEmpty(opts.DataDir, o.cfg.DataDir)
 	sessionDir := filepath.Join(dataDir, "sessions", opts.Name)
 	if err := os.MkdirAll(sessionDir, 0700); err != nil {
 		o.status.Error = err.Error()
+		o.mu.Unlock()
 		return fmt.Errorf("create openvpn session dir: %w", err)
 	}
 	configPath := filepath.Join(sessionDir, "client.ovpn")
 	if err := os.WriteFile(configPath, []byte(n.OpenVPN), 0600); err != nil {
 		o.status.Error = err.Error()
+		o.mu.Unlock()
 		return fmt.Errorf("write openvpn config: %w", err)
 	}
 
@@ -164,6 +186,7 @@ func (o *OpenVPN) Start(ctx context.Context, n node.Node, opts Options) error {
 	process, err := o.cfg.Starter.Start(ctx, command)
 	if err != nil {
 		o.status.Error = err.Error()
+		o.mu.Unlock()
 		return fmt.Errorf("start openvpn: %w", err)
 	}
 
@@ -173,8 +196,25 @@ func (o *OpenVPN) Start(ctx context.Context, n node.Node, opts Options) error {
 	o.options = opts
 	o.configPath = configPath
 	o.startedNode = n
-	o.status = Status{Name: opts.Name, NodeID: n.ID, Ready: true, StartedAt: time.Now(), PID: process.PID()}
+	o.status = Status{Name: opts.Name, NodeID: n.ID, Ready: false, StartedAt: time.Now(), PID: process.PID()}
 	go o.monitorProcess(process, o.monitorDone)
+	o.mu.Unlock()
+
+	if err := o.waitUntilDeviceReadyOrProcessExits(ctx, process, opts.DeviceName); err != nil {
+		_ = o.Stop(context.Background())
+		o.setError(err)
+		return fmt.Errorf("wait for openvpn device %q: %w", opts.DeviceName, err)
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.process != process {
+		err := fmt.Errorf("openvpn tunnel %q stopped before device became ready", opts.Name)
+		o.status.Error = err.Error()
+		return err
+	}
+	o.status.Ready = true
+	o.status.Error = ""
 	return nil
 }
 
@@ -329,6 +369,36 @@ func (o *OpenVPN) markDialFailure(err error) {
 	}
 }
 
+func (o *OpenVPN) waitUntilDeviceReadyOrProcessExits(ctx context.Context, process OpenVPNProcess, deviceName string) error {
+	readyDone := make(chan error, 1)
+	go func() {
+		readyDone <- o.cfg.DeviceWaiter(ctx, deviceName, o.cfg.ReadinessTimeout)
+	}()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-readyDone:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			o.mu.RLock()
+			currentProcess := o.process
+			statusErr := o.status.Error
+			o.mu.RUnlock()
+			if currentProcess != process {
+				if statusErr != "" {
+					return errors.New(statusErr)
+				}
+				return fmt.Errorf("openvpn process exited before device became ready")
+			}
+		}
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -336,4 +406,38 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func assumeDeviceReady(ctx context.Context, deviceName string, timeout time.Duration) error {
+	return ctx.Err()
+}
+
+func waitForDeviceReady(ctx context.Context, deviceName string, timeout time.Duration) error {
+	if deviceName == "" {
+		return fmt.Errorf("openvpn device name is empty")
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		iface, err := net.InterfaceByName(deviceName)
+		if err == nil && iface.Flags&net.FlagUp != 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("device %q is not up", deviceName)
+		case <-ticker.C:
+		}
+	}
 }

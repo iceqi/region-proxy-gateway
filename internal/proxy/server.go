@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/connection"
@@ -24,6 +25,7 @@ type Server struct {
 	ProxyPassword    string
 	HandshakeTimeout time.Duration
 
+	authMu      sync.RWMutex
 	dialer      Dialer
 	connections *connection.Tracker
 
@@ -45,6 +47,13 @@ func NewServer(listenAddr string, channelID string, proxyUsername string, proxyP
 	return server
 }
 
+func (s *Server) SetCredentials(username, password string) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+	s.ProxyUsername = username
+	s.ProxyPassword = password
+}
+
 func (s *Server) Serve(listener net.Listener) error {
 	for {
 		conn, err := listener.Accept()
@@ -63,10 +72,14 @@ func (s *Server) Serve(listener net.Listener) error {
 }
 
 func (s *Server) authenticate(username, password string) error {
-	if s.ProxyUsername != "" && username != s.ProxyUsername {
+	s.authMu.RLock()
+	proxyUsername := s.ProxyUsername
+	proxyPassword := s.ProxyPassword
+	s.authMu.RUnlock()
+	if proxyUsername != "" && username != proxyUsername {
 		return errors.New("invalid proxy credentials")
 	}
-	if !CheckPassword(password, s.ProxyPassword) {
+	if !CheckPassword(password, proxyPassword) {
 		return errors.New("invalid proxy credentials")
 	}
 	return nil

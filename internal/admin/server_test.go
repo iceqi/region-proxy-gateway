@@ -352,6 +352,116 @@ func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
 	}
 }
 
+func TestSettingsCanUpdateAccessAndProxyCredentials(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.AdminPath = "/admin"
+	cfg.AdminUsername = "admin"
+	cfg.AdminPassword = "old-admin"
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "old-proxy"
+	cfg.Channels = nil
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	reloaded := false
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg), WithRuntimeReloader(func(ctx context.Context) error {
+		reloaded = true
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{
+		"node_refresh_interval":"7m",
+		"admin_path":"/secret-admin",
+		"admin_username":"root",
+		"admin_password":"new-admin",
+		"proxy_username":"edge",
+		"proxy_password":"new-proxy"
+	}`))
+	req.SetBasicAuth("admin", "old-admin")
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !reloaded {
+		t.Fatalf("runtime reloader was not called")
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.AdminPath != "/secret-admin" || loaded.AdminUsername != "root" || loaded.AdminPassword != "new-admin" {
+		t.Fatalf("admin config = %+v, want updated credentials/path", loaded)
+	}
+	if loaded.ProxyUsername != "edge" || loaded.ProxyPassword != "new-proxy" {
+		t.Fatalf("proxy credentials = %q/%q, want updated", loaded.ProxyUsername, loaded.ProxyPassword)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "new-admin") || strings.Contains(body, "new-proxy") {
+		t.Fatalf("response leaked password: %s", body)
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/secret-admin/api/settings", nil)
+	newReq.SetBasicAuth("root", "new-admin")
+	newRec := httptest.NewRecorder()
+	server.ServeHTTP(newRec, newReq)
+	if newRec.Code != http.StatusOK {
+		t.Fatalf("new admin path/auth status = %d body=%s", newRec.Code, newRec.Body.String())
+	}
+}
+
+func TestSettingsEmptyPasswordsKeepExistingSecrets(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.AdminPassword = "old-admin"
+	cfg.ProxyPassword = "old-proxy"
+	cfg.Channels = nil
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"9m","admin_password":"","proxy_password":""}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.AdminPassword != "old-admin" || loaded.ProxyPassword != "old-proxy" {
+		t.Fatalf("passwords were changed: admin=%q proxy=%q", loaded.AdminPassword, loaded.ProxyPassword)
+	}
+}
+
+func TestSettingsRejectsRootAdminPath(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.Channels = nil
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"9m","admin_path":"/"}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRestartEndpointCallsRestarter(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	called := false

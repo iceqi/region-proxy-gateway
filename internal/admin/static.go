@@ -163,12 +163,19 @@ const indexHTML = `<!doctype html>
 
         <a-tab-pane key="settings" tab="设置">
           <section class="card">
-            <div class="card-head"><div class="card-title">基础设置</div></div>
+            <div class="card-head"><div class="card-title">访问与认证</div></div>
             <div class="card-body">
+              <div class="modal-grid">
+                <a-form-item label="登录入口"><a-input v-model:value="settings.admin_path" placeholder="/admin-xxxx"></a-input></a-form-item>
+                <a-form-item label="后台账号"><a-input v-model:value="settings.admin_username" placeholder="admin"></a-input></a-form-item>
+                <a-form-item label="后台新密码"><a-input-password v-model:value="settings.admin_password" placeholder="留空则不修改"></a-input-password></a-form-item>
+                <a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item>
+                <a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item>
+                <a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item>
+              </div>
               <a-space wrap>
-                <a-input v-model:value="settings.node_refresh_interval" placeholder="节点更新间隔，如 20m" style="width: 260px"></a-input>
                 <a-button type="primary" @click="saveSettings">保存设置</a-button>
-                <span class="muted">保存后重启服务，定时更新间隔才会重新加载。</span>
+                <span class="muted">密码不会回显；代理账号密码保存后立即热更新，登录入口和后台账号下次请求立即生效。</span>
               </a-space>
             </div>
           </section>
@@ -246,7 +253,7 @@ const indexHTML = `<!doctype html>
           nodes: [],
           connections: [],
           deepStats: { pending: 0, running: 0, success: 0, failed: 0 },
-          settings: { node_refresh_interval: '20m' },
+          settings: { node_refresh_interval: '20m', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
           channelForm: this.emptyChannelForm(),
@@ -350,7 +357,7 @@ const indexHTML = `<!doctype html>
             this.connections = connections.connections || [];
             this.nodes = nodes.nodes || [];
             this.deepStats = deepStatus.stats || this.deepStats;
-            if (status.settings) this.settings = Object.assign({}, this.settings, status.settings);
+            if (status.settings) this.settings = Object.assign({}, this.settings, status.settings, { admin_password: '', proxy_password: '' });
           } catch (err) {
             message.error(err.message);
           } finally {
@@ -511,8 +518,10 @@ const indexHTML = `<!doctype html>
         },
         async saveSettings() {
           try {
-            await this.request('settings', { method: 'POST', body: JSON.stringify(this.settings) });
-            message.success('设置已保存，重启后生效');
+            const body = await this.request('settings', { method: 'POST', body: JSON.stringify(this.settings) });
+            if (body.settings) this.settings = Object.assign({}, this.settings, body.settings, { admin_password: '', proxy_password: '' });
+            this.noticeRuntimeResult(body, '设置已保存并热更新');
+            await this.load(false);
           } catch (err) {
             message.error(err.message);
           }

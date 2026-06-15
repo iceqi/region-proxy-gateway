@@ -104,11 +104,12 @@ func NewServer(channels *channel.Manager, nodes *node.Store, connections *connec
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == s.adminPath {
-		http.Redirect(w, r, s.adminPath+"/", http.StatusMovedPermanently)
+	adminPath := s.currentAdminPath()
+	if r.URL.Path == adminPath {
+		http.Redirect(w, r, adminPath+"/", http.StatusMovedPermanently)
 		return
 	}
-	if r.URL.Path == s.adminPath+"/" {
+	if r.URL.Path == adminPath+"/" {
 		if !s.authorized(r) {
 			s.writeUnauthorized(w)
 			return
@@ -116,7 +117,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeHTML(w, http.StatusOK, indexHTML)
 		return
 	}
-	if !strings.HasPrefix(r.URL.Path, s.adminPath+"/") {
+	if !strings.HasPrefix(r.URL.Path, adminPath+"/") {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
@@ -126,7 +127,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	originalPath := r.URL.Path
-	r.URL.Path = strings.TrimPrefix(r.URL.Path, s.adminPath)
+	r.URL.Path = strings.TrimPrefix(r.URL.Path, adminPath)
 	if r.URL.Path == "" {
 		r.URL.Path = "/"
 	}
@@ -205,16 +206,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	if s.adminUser == "" && s.adminPass == "" {
+	_, adminUser, adminPass := s.currentAdminAuth()
+	if adminUser == "" && adminPass == "" {
 		return true
 	}
 	username, password, ok := r.BasicAuth()
 	if !ok {
 		return false
 	}
-	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(s.adminUser)) == 1
-	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(s.adminPass)) == 1
+	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(adminUser)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(adminPass)) == 1
 	return userOK && passOK
+}
+
+func (s *Server) currentAdminPath() string {
+	adminPath, _, _ := s.currentAdminAuth()
+	return adminPath
+}
+
+func (s *Server) currentAdminAuth() (string, string, string) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	adminPath := s.adminPath
+	if adminPath == "" {
+		adminPath = "/admin"
+	}
+	return adminPath, s.adminUser, s.adminPass
 }
 
 func (s *Server) writeUnauthorized(w http.ResponseWriter) {
@@ -511,6 +528,11 @@ func cleanNodeIDsKeepingDuplicates(ids []string, limit int) []string {
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		NodeRefreshInterval string `json:"node_refresh_interval"`
+		AdminPath           string `json:"admin_path"`
+		AdminUsername       string `json:"admin_username"`
+		AdminPassword       string `json:"admin_password"`
+		ProxyUsername       string `json:"proxy_username"`
+		ProxyPassword       string `json:"proxy_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -523,7 +545,29 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
 		cfg.NodeRefreshInterval = interval
+		if strings.TrimSpace(body.AdminPath) != "" {
+			adminPath, err := normalizeEditableAdminPath(body.AdminPath)
+			if err != nil {
+				return cfg, err
+			}
+			cfg.AdminPath = adminPath
+		}
+		if strings.TrimSpace(body.AdminUsername) != "" {
+			cfg.AdminUsername = strings.TrimSpace(body.AdminUsername)
+		}
+		if strings.TrimSpace(body.AdminPassword) != "" {
+			cfg.AdminPassword = strings.TrimSpace(body.AdminPassword)
+		}
+		if strings.TrimSpace(body.ProxyUsername) != "" {
+			cfg.ProxyUsername = strings.TrimSpace(body.ProxyUsername)
+		}
+		if strings.TrimSpace(body.ProxyPassword) != "" {
+			cfg.ProxyPassword = strings.TrimSpace(body.ProxyPassword)
+		}
 		if _, err := config.ParseNodeRefreshInterval(interval); err != nil {
+			return cfg, err
+		}
+		if err := cfg.Validate(); err != nil {
 			return cfg, err
 		}
 		return cfg, nil
@@ -532,9 +576,13 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.applyAuthConfig(cfg)
+	reloadOK, reloadError := s.reloadRuntimeState(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"config":           cfg,
-		"restart_required": true,
+		"settings":         s.safeSettings(),
+		"runtime_reloaded": reloadOK,
+		"runtime_error":    reloadError,
+		"restart_required": false,
 	})
 }
 
@@ -878,12 +926,47 @@ func compactNode(n node.Node) nodeView {
 
 type settingsView struct {
 	NodeRefreshInterval string `json:"node_refresh_interval"`
+	AdminPath           string `json:"admin_path"`
+	AdminUsername       string `json:"admin_username"`
+	ProxyUsername       string `json:"proxy_username"`
+	AdminPasswordSet    bool   `json:"admin_password_set"`
+	ProxyPasswordSet    bool   `json:"proxy_password_set"`
 }
 
 func (s *Server) safeSettings() settingsView {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	return settingsView{NodeRefreshInterval: s.config.NodeRefreshInterval}
+	return settingsView{
+		NodeRefreshInterval: s.config.NodeRefreshInterval,
+		AdminPath:           s.config.AdminPath,
+		AdminUsername:       s.config.AdminUsername,
+		ProxyUsername:       s.config.ProxyUsername,
+		AdminPasswordSet:    s.config.AdminPassword != "",
+		ProxyPasswordSet:    s.config.ProxyPassword != "",
+	}
+}
+
+func (s *Server) applyAuthConfig(cfg config.Config) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.adminPath = normalizeAdminPath(cfg.AdminPath)
+	s.adminUser = cfg.AdminUsername
+	s.adminPass = cfg.AdminPassword
+}
+
+func normalizeEditableAdminPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("admin path is required")
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	path = strings.TrimRight(path, "/")
+	if path == "" {
+		path = "/"
+	}
+	return path, nil
 }
 
 func (s *Server) writeJSON(w http.ResponseWriter, status int, body any) {

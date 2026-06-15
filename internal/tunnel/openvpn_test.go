@@ -200,6 +200,52 @@ func TestOpenVPNTunnelMarksNotReadyWhenDeviceDialFails(t *testing.T) {
 	}
 }
 
+func TestOpenVPNTunnelStartWaitsForDeviceBeforeReady(t *testing.T) {
+	waiterCalled := false
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir: t.TempDir(),
+		Starter: &recordingProcessStarter{},
+		DeviceWaiter: func(ctx context.Context, deviceName string, timeout time.Duration) error {
+			waiterCalled = true
+			if deviceName != "rpg7" {
+				t.Fatalf("deviceName = %q, want rpg7", deviceName)
+			}
+			return nil
+		},
+	})
+	if err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-3000", DeviceName: "rpg7"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	t.Cleanup(func() { _ = tun.Stop(context.Background()) })
+	if !waiterCalled {
+		t.Fatalf("device waiter was not called")
+	}
+	if !tun.Status().Ready {
+		t.Fatalf("status should be ready after device waiter succeeds")
+	}
+}
+
+func TestOpenVPNTunnelStartStopsProcessWhenDeviceNeverAppears(t *testing.T) {
+	starter := &recordingProcessStarter{}
+	tun := NewOpenVPN(OpenVPNConfig{
+		DataDir: t.TempDir(),
+		Starter: starter,
+		DeviceWaiter: func(ctx context.Context, deviceName string, timeout time.Duration) error {
+			return errors.New("no such device")
+		},
+	})
+	err := tun.Start(context.Background(), node.Node{ID: "jp-1", OpenVPN: "client\n"}, Options{Name: "jp-3000", DeviceName: "rpg7"})
+	if err == nil || !strings.Contains(err.Error(), "no such device") {
+		t.Fatalf("Start error = %v, want no such device", err)
+	}
+	if len(starter.processes) != 1 || !starter.processes[0].terminated.Load() {
+		t.Fatalf("expected started process to be terminated after readiness failure")
+	}
+	if tun.Status().Ready {
+		t.Fatalf("status should not be ready after readiness failure")
+	}
+}
+
 func TestOpenVPNTunnelDialRequiresStartedTunnel(t *testing.T) {
 	tun := NewOpenVPN(OpenVPNConfig{DataDir: t.TempDir(), Starter: &recordingProcessStarter{}})
 	_, err := tun.DialContext(context.Background(), "tcp", "example.com:443")
