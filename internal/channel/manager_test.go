@@ -64,6 +64,49 @@ func TestManagerStartsAutoChannelWithBestRegionalNode(t *testing.T) {
 	}
 }
 
+func TestManagerAutoSelectionAvoidsUnknownUDPWhenAvailableNodeExists(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-unknown", Region: "jp", Speed: 5000, Available: true},
+		{ID: "jp-available", Region: "jp", Speed: 100, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		NodeChecker: func(ctx context.Context, n node.Node) node.Node {
+			if n.ID == "jp-unknown" {
+				n.Available = false
+				n.ProbeStatus = "unknown"
+				return n
+			}
+			n.Available = true
+			n.ProbeStatus = "available"
+			n.LatencyMS = 100
+			return n
+		},
+		DataDir: t.TempDir(),
+	})
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-available" {
+		t.Fatalf("current node = %q, want available node", snapshot.CurrentNodeID)
+	}
+}
+
 func TestManagerSwitchesChannelToManualNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -489,6 +532,43 @@ func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
 	snapshot, _ := manager.Snapshot("jp-3000")
 	if snapshot.CurrentNodeID != "jp-c" {
 		t.Fatalf("current node = %q, want jp-c because jp-a is current and jp-b was used recently", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerRotationAvoidsUnknownUDPWhenAvailableNodeExists(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-current", Region: "jp", Speed: 300, Available: true, ProbeStatus: "available"},
+		{ID: "jp-unknown", Region: "jp", Speed: 5000, Available: true, ProbeStatus: "unknown"},
+		{ID: "jp-available", Region: "jp", Speed: 100, Available: true, ProbeStatus: "available"},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-available" {
+		t.Fatalf("current node = %q, want available node over unknown", snapshot.CurrentNodeID)
 	}
 }
 

@@ -106,6 +106,22 @@ func TestBestByRegionIgnoresUnavailableNodes(t *testing.T) {
 	}
 }
 
+func TestBestByRegionDeprioritizesUnknownProbeStatus(t *testing.T) {
+	store := NewStore()
+	store.Replace([]Node{
+		{ID: "jp-unknown-fast", Region: "jp", Speed: 9000, Available: true, ProbeStatus: "unknown"},
+		{ID: "jp-available-slow", Region: "jp", Speed: 100, Available: true, ProbeStatus: "available"},
+	})
+
+	got, ok := store.BestByRegion("jp", "")
+	if !ok {
+		t.Fatal("expected a jp node")
+	}
+	if got.ID != "jp-available-slow" {
+		t.Fatalf("expected available node over unknown, got %q", got.ID)
+	}
+}
+
 func TestStoreCopiesNodeSlices(t *testing.T) {
 	store := NewStore()
 	input := []Node{

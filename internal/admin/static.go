@@ -676,10 +676,11 @@ const indexHTML = `<!doctype html>
           const text = record.probe_message || record.fail_reason || '';
           if (!text) return '';
           return text
-            .replace('ping ok; udp port cannot be fully verified without vpn handshake', 'Ping 正常；UDP 端口需建立 VPN 后才能完全确认')
+            .replace('udp host unreachable; deprioritized until deep test or successful ping', '主机不可达；已降低优先级，深测成功或 Ping 恢复后再优先使用')
+            .replace('ping ok; udp port cannot be fully verified without vpn handshake', 'Ping 正常；UDP 端口未握手确认')
             .replace('ping ok; tcp port ok', 'Ping 正常；TCP 端口可连接')
             .replace('tcp port ok', 'TCP 端口可连接')
-            .replace('ping failed; udp cannot be verified without vpn handshake:', 'Ping 失败；UDP 节点需建立 VPN 才能完全确认：')
+            .replace('ping failed; udp cannot be verified without vpn handshake:', 'Ping 失败；已降低优先级：')
             .replace('ping failed:', 'Ping 失败：')
             .replace('tcp connect failed:', 'TCP 连接失败：')
             .replace('missing host', '缺少主机或 IP');

@@ -105,6 +105,9 @@ func (s *Store) CandidatesByRegion(region, avoidID string, limit int) []Node {
 }
 
 func better(a, b Node) bool {
+	if ap, bp := probePriority(a), probePriority(b); ap != bp {
+		return ap > bp
+	}
 	if a.LatencyMS == 0 && b.LatencyMS > 0 {
 		return false
 	}
@@ -118,6 +121,17 @@ func better(a, b Node) bool {
 		return a.Speed > b.Speed
 	}
 	return a.LatencyMS < b.LatencyMS
+}
+
+func probePriority(n Node) int {
+	switch n.ProbeStatus {
+	case "unknown":
+		return 1
+	case "unavailable":
+		return 0
+	default:
+		return 2
+	}
 }
 
 func sortNodes(nodes []Node) {

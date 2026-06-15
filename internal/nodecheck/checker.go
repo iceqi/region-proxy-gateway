@@ -73,7 +73,7 @@ func (c Checker) Check(ctx context.Context, n node.Node) node.Node {
 	if pingErr != nil {
 		n.Available = true
 		n.ProbeStatus = "unknown"
-		n.ProbeMessage = "ping failed; udp cannot be verified without vpn handshake: " + pingErr.Error()
+		n.ProbeMessage = "udp host unreachable; deprioritized until deep test or successful ping"
 		n.FailReason = ""
 		n.ProbedAt = time.Now()
 		n.LastTestedAt = n.ProbedAt

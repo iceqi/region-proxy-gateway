@@ -70,7 +70,7 @@ func TestCheckerMarksFailure(t *testing.T) {
 	}
 }
 
-func TestCheckerKeepsUDPNodeAvailableWhenPingIsBlocked(t *testing.T) {
+func TestCheckerDeprioritizesUDPNodeWhenPingFails(t *testing.T) {
 	checker := Checker{Timeout: time.Second}
 	checker.Ping = func(ctx context.Context, host string, timeout time.Duration) (int, error) {
 		return 0, errors.New("icmp blocked")
@@ -84,7 +84,7 @@ func TestCheckerKeepsUDPNodeAvailableWhenPingIsBlocked(t *testing.T) {
 	})
 
 	if !got.Available {
-		t.Fatalf("UDP node should stay available when only ping is blocked, fail=%q", got.FailReason)
+		t.Fatalf("UDP node should stay as fallback candidate when ping fails")
 	}
 	if got.LatencyMS != 0 {
 		t.Fatalf("latency = %d, want unknown 0", got.LatencyMS)
@@ -93,7 +93,10 @@ func TestCheckerKeepsUDPNodeAvailableWhenPingIsBlocked(t *testing.T) {
 		t.Fatalf("probe status = %q, want unknown", got.ProbeStatus)
 	}
 	if got.FailReason != "" {
-		t.Fatalf("fail reason = %q, want empty for unknown UDP reachability", got.FailReason)
+		t.Fatalf("fail reason = %q, want empty because UDP reachability is unknown, not confirmed failed", got.FailReason)
+	}
+	if got.ProbeMessage != "udp host unreachable; deprioritized until deep test or successful ping" {
+		t.Fatalf("probe message = %q", got.ProbeMessage)
 	}
 }
 

@@ -723,6 +723,9 @@ func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result, 
 	if aSuccess != bSuccess {
 		return aSuccess
 	}
+	if ap, bp := probePriority(a), probePriority(b); ap != bp {
+		return ap > bp
+	}
 	if aSuccess && bSuccess && aResult.ConnectMS != bResult.ConnectMS {
 		return aResult.ConnectMS < bResult.ConnectMS
 	}
@@ -732,6 +735,17 @@ func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result, 
 		}
 	}
 	return betterCheckedNode(a, b)
+}
+
+func probePriority(n node.Node) int {
+	switch n.ProbeStatus {
+	case "unknown":
+		return 1
+	case "unavailable":
+		return 0
+	default:
+		return 2
+	}
 }
 
 func (m *Manager) recordUse(ctx context.Context, channelID string, n node.Node, connectedAt time.Time, switchedAt time.Time) {
