@@ -729,7 +729,79 @@ func TestManagerFixedAutoChannelRestartsCurrentNodeWithoutSwitchingCandidates(t 
 	}
 }
 
-func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
+func TestManagerRotationAllowsRecentlyUsedIPWhenNotCurrentlyUsed(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-current", Region: "jp", IP: "198.51.100.10", Speed: 1000, Available: true},
+		{ID: "jp-recent", Region: "jp", IP: "198.51.100.20", Speed: 900, Available: true},
+		{ID: "jp-slower", Region: "jp", IP: "198.51.100.30", Speed: 100, Available: true},
+	})
+	history := newFakeHistory()
+	history.recent["jp-3000"] = map[string]time.Time{"jp-recent": time.Now().Add(-time.Hour)}
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		History:       history,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-recent" {
+		t.Fatalf("current node = %q, want recently used node because its IP is not currently occupied", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerRotationSkipsIPCurrentlyUsedByAnotherChannel(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-current", Region: "jp", IP: "198.51.100.10", Speed: 1000, Available: true},
+		{ID: "jp-occupied", Region: "jp", IP: "198.51.100.20", Speed: 900, Available: true},
+		{ID: "jp-open", Region: "jp", IP: "198.51.100.30", Speed: 100, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{
+			{ID: "jp-3000", ListenHost: "127.0.0.1", ListenPort: 3000, Region: "jp", RotateMinutes: 10, SelectionMode: SelectionAuto, Enabled: true},
+			{ID: "jp-3001", ListenHost: "127.0.0.1", ListenPort: 3001, Region: "jp", SelectionMode: SelectionManual, ManualNodeID: "jp-occupied", Enabled: true},
+		},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-open" {
+		t.Fatalf("current node = %q, want jp-open because jp-occupied IP is already used by another channel", snapshot.CurrentNodeID)
+	}
+}
+
+func TestManagerRotationDoesNotAvoidHistoryWhenIPIsNotCurrentlyUsed(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
 		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
@@ -764,8 +836,8 @@ func TestManagerRotationAvoidsNodesUsedInLast24Hours(t *testing.T) {
 	}
 
 	snapshot, _ := manager.Snapshot("jp-3000")
-	if snapshot.CurrentNodeID != "jp-c" {
-		t.Fatalf("current node = %q, want jp-c because jp-a is current and jp-b was used recently", snapshot.CurrentNodeID)
+	if snapshot.CurrentNodeID != "jp-b" {
+		t.Fatalf("current node = %q, want jp-b because history no longer blocks rotation", snapshot.CurrentNodeID)
 	}
 }
 

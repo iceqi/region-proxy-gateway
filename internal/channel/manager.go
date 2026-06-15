@@ -382,7 +382,8 @@ func (m *Manager) recoverAutoChannel(ctx context.Context, channelID, network, ad
 		if currentNode.ID != "" {
 			tried[currentNode.ID] = struct{}{}
 		}
-		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, currentNode.ID, tried)
+		occupiedExitIPs := m.currentExitIPsLocked()
+		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, currentNode.ID, tried, occupiedExitIPs)
 		if err != nil {
 			m.mu.Unlock()
 			if lastErr != nil {
@@ -593,7 +594,8 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 			ch.err = fmt.Sprintf("refresh nodes before rotation failed: %v", err)
 		}
 	}
-	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID)
+	occupiedExitIPs := m.currentExitIPsLocked()
+	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID, occupiedExitIPs)
 	if err != nil {
 		ch.lastRotationAt = time.Now()
 		ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
@@ -645,18 +647,18 @@ func isAnyRegion(region string) bool {
 	return region == "" || region == "*"
 }
 
-func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, error) {
+func (m *Manager) selectRotationNode(ctx context.Context, ch config.Channel, currentNodeID string, occupiedExitIPs map[string]struct{}) (node.Node, error) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
-	n, ok := m.bestRotationNode(ctx, ch, currentNodeID)
+	n, ok := m.bestRotationNode(ctx, ch, currentNodeID, occupiedExitIPs)
 	if !ok {
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return n, nil
 }
 
-func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch config.Channel, currentNodeID string, avoided map[string]struct{}) (node.Node, error) {
+func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch config.Channel, currentNodeID string, avoided map[string]struct{}, occupiedExitIPs map[string]struct{}) (node.Node, error) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
@@ -669,10 +671,13 @@ func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch confi
 		if ch.ManualNodeID != "" && candidate.ID == ch.ManualNodeID {
 			continue
 		}
+		if _, ok := occupiedExitIPs[nodeExitIP(candidate)]; nodeExitIP(candidate) != "" && ok {
+			continue
+		}
 		if _, ok := avoided[candidate.ID]; ok {
 			continue
 		}
-		if !found || betterRotationNode(candidate, best, map[string]deeptest.Result{}, map[string]time.Time{}) {
+		if !found || betterRotationNode(candidate, best, map[string]deeptest.Result{}) {
 			best = candidate
 			found = true
 		}
@@ -683,23 +688,30 @@ func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch confi
 	return best, nil
 }
 
-func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, currentNodeID string) (node.Node, bool) {
+func (m *Manager) currentExitIPsLocked() map[string]struct{} {
+	used := map[string]struct{}{}
+	for _, ch := range m.channels {
+		exitIP := nodeExitIP(ch.currentNode)
+		if exitIP == "" {
+			continue
+		}
+		used[exitIP] = struct{}{}
+	}
+	return used
+}
+
+func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, currentNodeID string, occupiedExitIPs map[string]struct{}) (node.Node, bool) {
 	if m.cfg.Nodes == nil {
 		return node.Node{}, false
 	}
 	deepResults := map[string]deeptest.Result{}
-	recent := map[string]time.Time{}
 	if m.cfg.History != nil {
 		if results, err := m.cfg.History.DeepTestResults(ctx); err == nil {
 			deepResults = results
 		}
-		if used, err := m.cfg.History.RecentNodeIDsForChannel(ctx, ch.ID, time.Now().Add(-24*time.Hour)); err == nil {
-			recent = used
-		}
 	}
 	all := m.cfg.Nodes.CandidatesByRegion(ch.Region, "", 0)
 	filtered := make([]node.Node, 0, len(all))
-	fallback := make([]node.Node, 0, len(all))
 	for _, candidate := range all {
 		if candidate.ID == currentNodeID {
 			continue
@@ -707,21 +719,17 @@ func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, curre
 		if ch.ManualNodeID != "" && candidate.ID == ch.ManualNodeID {
 			continue
 		}
-		if _, ok := recent[candidate.ID]; ok {
-			fallback = append(fallback, candidate)
+		if _, ok := occupiedExitIPs[nodeExitIP(candidate)]; nodeExitIP(candidate) != "" && ok {
 			continue
 		}
 		filtered = append(filtered, candidate)
-	}
-	if len(filtered) == 0 {
-		filtered = fallback
 	}
 	if len(filtered) == 0 {
 		return node.Node{}, false
 	}
 	best := filtered[0]
 	for _, candidate := range filtered[1:] {
-		if betterRotationNode(candidate, best, deepResults, recent) {
+		if betterRotationNode(candidate, best, deepResults) {
 			best = candidate
 		}
 	}
@@ -772,7 +780,7 @@ func betterCheckedNode(a, b node.Node) bool {
 	return a.Speed > b.Speed
 }
 
-func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result, recent map[string]time.Time) bool {
+func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result) bool {
 	aResult, aHas := deepResults[a.ID]
 	bResult, bHas := deepResults[b.ID]
 	aSuccess := aHas && aResult.Status == deeptest.StatusSuccess
@@ -785,11 +793,6 @@ func betterRotationNode(a, b node.Node, deepResults map[string]deeptest.Result, 
 	}
 	if aSuccess && bSuccess && aResult.ConnectMS != bResult.ConnectMS {
 		return aResult.ConnectMS < bResult.ConnectMS
-	}
-	if aUsed, okA := recent[a.ID]; okA {
-		if bUsed, okB := recent[b.ID]; okB && !aUsed.Equal(bUsed) {
-			return aUsed.Before(bUsed)
-		}
 	}
 	return betterCheckedNode(a, b)
 }
