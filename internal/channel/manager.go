@@ -328,9 +328,19 @@ func (m *Manager) recoverChannelAfterDialFailure(ctx context.Context, channelID,
 
 	switch selectionMode {
 	case SelectionAuto:
+		m.mu.RLock()
+		ch := m.channels[channelID]
+		rotateMinutes := 0
+		if ch != nil {
+			rotateMinutes = ch.cfg.RotateMinutes
+		}
+		m.mu.RUnlock()
+		if rotateMinutes <= 0 {
+			return m.recoverCurrentChannelNode(ctx, channelID, network, address)
+		}
 		return m.recoverAutoChannel(ctx, channelID, network, address)
 	case SelectionManual:
-		return m.recoverManualChannel(ctx, channelID, network, address)
+		return m.recoverCurrentChannelNode(ctx, channelID, network, address)
 	default:
 		return nil, fmt.Errorf("channel %q has unsupported selection mode %q", channelID, selectionMode)
 	}
@@ -354,10 +364,11 @@ func (m *Manager) recoverAutoChannel(ctx context.Context, channelID, network, ad
 			m.mu.Unlock()
 			return nil, fmt.Errorf("channel %q is not running", channelID)
 		}
-		if ch.currentNode.ID != "" {
-			tried[ch.currentNode.ID] = struct{}{}
+		currentNode := ch.currentNode
+		if currentNode.ID != "" {
+			tried[currentNode.ID] = struct{}{}
 		}
-		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, ch.currentNode.ID, tried)
+		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, currentNode.ID, tried)
 		if err != nil {
 			m.mu.Unlock()
 			if lastErr != nil {
@@ -372,18 +383,12 @@ func (m *Manager) recoverAutoChannel(ctx context.Context, channelID, network, ad
 			m.mu.Unlock()
 			continue
 		}
-		ch.lastNode = ch.currentNode
-		ch.currentNode = n
-		ch.startedAt = time.Now()
-		ch.lastRotationAt = ch.startedAt
-		ch.err = ""
 		tun := ch.tunnel
-		connectedAt := ch.startedAt
-		m.recordUse(ctx, ch.cfg.ID, n, connectedAt, connectedAt)
 		m.mu.Unlock()
 
 		conn, err := tun.DialContext(ctx, network, address)
 		if err == nil {
+			m.commitRecoveredNode(ctx, channelID, currentNode, n)
 			return conn, nil
 		}
 		lastErr = err
@@ -391,7 +396,7 @@ func (m *Manager) recoverAutoChannel(ctx context.Context, channelID, network, ad
 	}
 }
 
-func (m *Manager) recoverManualChannel(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+func (m *Manager) recoverCurrentChannelNode(ctx context.Context, channelID, network, address string) (net.Conn, error) {
 	m.mu.Lock()
 	ch, ok := m.channels[channelID]
 	if !ok {
@@ -402,20 +407,17 @@ func (m *Manager) recoverManualChannel(ctx context.Context, channelID, network, 
 		m.mu.Unlock()
 		return nil, fmt.Errorf("channel %q is not running", channelID)
 	}
-	if ch.currentNode.ID == "" {
+	currentNode := ch.currentNode
+	if currentNode.ID == "" {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("manual channel %q has no current node", channelID)
+		return nil, fmt.Errorf("channel %q has no current node", channelID)
 	}
-	if err := ch.tunnel.Switch(ctx, ch.currentNode); err != nil {
+	if err := ch.tunnel.Switch(ctx, currentNode); err != nil {
 		ch.err = err.Error()
 		m.mu.Unlock()
 		return nil, err
 	}
-	ch.startedAt = time.Now()
-	ch.lastRotationAt = ch.startedAt
-	ch.err = ""
 	tun := ch.tunnel
-	m.recordUse(ctx, ch.cfg.ID, ch.currentNode, ch.startedAt, ch.startedAt)
 	m.mu.Unlock()
 
 	conn, err := tun.DialContext(ctx, network, address)
@@ -423,7 +425,29 @@ func (m *Manager) recoverManualChannel(ctx context.Context, channelID, network, 
 		m.setChannelError(channelID, err.Error())
 		return nil, err
 	}
+	m.commitRecoveredNode(ctx, channelID, currentNode, currentNode)
 	return conn, nil
+}
+
+func (m *Manager) commitRecoveredNode(ctx context.Context, channelID string, previous node.Node, current node.Node) {
+	m.mu.Lock()
+	ch, ok := m.channels[channelID]
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	if previous.ID != current.ID {
+		ch.lastNode = previous
+		ch.lastRotationAt = now
+	}
+	ch.currentNode = current
+	ch.startedAt = now
+	ch.err = ""
+	channelID = ch.cfg.ID
+	m.mu.Unlock()
+
+	m.recordUse(ctx, channelID, current, now, now)
 }
 
 func (m *Manager) tunnelForDial(channelID string) (tunnel.Tunnel, error) {

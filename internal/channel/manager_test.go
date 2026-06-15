@@ -29,6 +29,7 @@ func TestManagerStartsAutoChannelWithBestRegionalNode(t *testing.T) {
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -77,6 +78,7 @@ func TestManagerAutoSelectionAvoidsUnknownUDPWhenAvailableNodeExists(t *testing.
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -120,6 +122,7 @@ func TestManagerSwitchesChannelToManualNode(t *testing.T) {
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -202,6 +205,7 @@ func TestManagerReplaceChannelsAddsUpdatesAndRemovesWithoutProcessRestart(t *tes
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -370,6 +374,7 @@ func TestManagerRetriesDialFailuresThenRotatesAutoChannel(t *testing.T) {
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -417,6 +422,7 @@ func TestManagerAutoChannelTriesNextNodeWhenRecoveredNodeStillFails(t *testing.T
 			ListenHost:    "127.0.0.1",
 			ListenPort:    3000,
 			Region:        "jp",
+			RotateMinutes: 10,
 			SelectionMode: SelectionAuto,
 			Enabled:       true,
 		}},
@@ -492,6 +498,88 @@ func TestManagerRestartsManualChannelAfterDialFailures(t *testing.T) {
 	snapshot, _ := manager.Snapshot("jp-3000")
 	if snapshot.LastError != "" {
 		t.Fatalf("last error = %q, want empty after successful restart", snapshot.LastError)
+	}
+}
+
+func TestManagerAutoRecoveryFailureDoesNotAffectOtherChannels(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", IP: "198.51.100.10", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", IP: "198.51.100.20", Speed: 200, Available: true},
+		{ID: "jp-c", Region: "jp", IP: "198.51.100.30", Speed: 100, Available: true},
+	})
+	factory := &recordingFactory{dialErrByChannel: map[string]error{"rotating": fmt.Errorf("rotating failed")}}
+	manager := NewManager(Config{
+		Channels: []config.Channel{
+			{ID: "rotating", ListenHost: "127.0.0.1", ListenPort: 3000, Region: "jp", RotateMinutes: 10, SelectionMode: SelectionAuto, Enabled: true},
+			{ID: "fixed", ListenHost: "127.0.0.1", ListenPort: 3001, Region: "jp", RotateMinutes: 0, SelectionMode: SelectionAuto, Enabled: true},
+		},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	fixedBefore, _ := manager.Snapshot("fixed")
+	_, err := manager.DialContext(context.Background(), "rotating", "tcp", "example.com:443")
+	if err == nil {
+		t.Fatalf("rotating channel dial should fail")
+	}
+	fixedAfter, _ := manager.Snapshot("fixed")
+
+	if fixedAfter.CurrentNodeID != fixedBefore.CurrentNodeID {
+		t.Fatalf("fixed channel node changed from %q to %q", fixedBefore.CurrentNodeID, fixedAfter.CurrentNodeID)
+	}
+	if fixedAfter.CurrentExitIP != fixedBefore.CurrentExitIP {
+		t.Fatalf("fixed channel exit changed from %q to %q", fixedBefore.CurrentExitIP, fixedAfter.CurrentExitIP)
+	}
+	if fixedAfter.LastError != "" {
+		t.Fatalf("fixed channel last error = %q, want empty", fixedAfter.LastError)
+	}
+}
+
+func TestManagerFixedAutoChannelRestartsCurrentNodeWithoutSwitchingCandidates(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", IP: "198.51.100.10", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", IP: "198.51.100.20", Speed: 200, Available: true},
+	})
+	factory := &recordingFactory{dialErrs: 4}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "fixed",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 0,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	initial, _ := manager.Snapshot("fixed")
+	conn, err := manager.DialContext(context.Background(), "fixed", "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	_ = conn.Close()
+	snapshot, _ := manager.Snapshot("fixed")
+
+	if snapshot.CurrentNodeID != initial.CurrentNodeID {
+		t.Fatalf("fixed channel switched from %q to %q", initial.CurrentNodeID, snapshot.CurrentNodeID)
+	}
+	if len(factory.tunnels) != 1 || len(factory.tunnels[0].switchedNodes) != 1 || factory.tunnels[0].switchedNodes[0] != initial.CurrentNodeID {
+		t.Fatalf("fixed recovery switches = %#v, want restart current node only", factory.tunnels[0].switchedNodes)
 	}
 }
 
@@ -765,6 +853,7 @@ type recordingFactory struct {
 	dialErrs         int
 	dialErrsByTunnel []int
 	dialErrByNode    map[string]error
+	dialErrByChannel map[string]error
 }
 
 func (f *recordingFactory) New(name string) tunnel.Tunnel {
@@ -772,21 +861,22 @@ func (f *recordingFactory) New(name string) tunnel.Tunnel {
 	if len(f.dialErrsByTunnel) > len(f.tunnels) {
 		dialErrs = f.dialErrsByTunnel[len(f.tunnels)]
 	}
-	tun := &recordingTunnel{name: name, switchErr: f.switchErr, dialErrs: dialErrs, dialErrByNode: f.dialErrByNode}
+	tun := &recordingTunnel{name: name, switchErr: f.switchErr, dialErrs: dialErrs, dialErrByNode: f.dialErrByNode, dialErrByChannel: f.dialErrByChannel}
 	f.tunnels = append(f.tunnels, tun)
 	return tun
 }
 
 type recordingTunnel struct {
-	name          string
-	startedNode   node.Node
-	switchedNode  node.Node
-	switchedNodes []string
-	switchErr     error
-	dialErrs      int
-	dialErrByNode map[string]error
-	dialCount     int
-	stopped       bool
+	name             string
+	startedNode      node.Node
+	switchedNode     node.Node
+	switchedNodes    []string
+	switchErr        error
+	dialErrs         int
+	dialErrByNode    map[string]error
+	dialErrByChannel map[string]error
+	dialCount        int
+	stopped          bool
 }
 
 func (t *recordingTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
@@ -811,6 +901,9 @@ func (t *recordingTunnel) Switch(ctx context.Context, n node.Node) error {
 
 func (t *recordingTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	t.dialCount++
+	if err := t.dialErrByChannel[t.name]; err != nil {
+		return nil, err
+	}
 	if err := t.dialErrByNode[t.startedNode.ID]; err != nil {
 		return nil, err
 	}
