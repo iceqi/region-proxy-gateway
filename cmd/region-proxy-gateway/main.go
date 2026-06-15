@@ -167,14 +167,14 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		_ = database.Close()
 		return services{}, err
 	}
-	reloadRuntime := func(ctx context.Context) error {
+	reloadRuntime := func(reloadCtx context.Context) error {
 		nextCfg, err := config.Load(cfgPath)
 		if err == nil {
 			proxyRuntime.SetCredentials(nextCfg.ProxyUsername, nextCfg.ProxyPassword)
 		} else {
 			log.Printf("reload config for proxy credentials failed: %v", err)
 		}
-		nextChannels, err := database.ListChannels(ctx)
+		nextChannels, err := database.ListChannels(reloadCtx)
 		if err != nil {
 			return err
 		}

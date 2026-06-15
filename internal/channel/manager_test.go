@@ -952,6 +952,45 @@ func TestManagerRefreshesNodesBeforeRotation(t *testing.T) {
 	}
 }
 
+func TestManagerReplaceChannelsKeepsRotatorsAfterRequestContextCancel(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 200, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 1,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	manager.rotationInterval = func(config.Channel) time.Duration { return 20 * time.Millisecond }
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	if err := manager.ReplaceChannels(reqCtx, manager.cfg.Channels); err != nil {
+		t.Fatalf("ReplaceChannels: %v", err)
+	}
+	cancel()
+
+	waitForChannelTest(t, func() bool {
+		snapshot, _ := manager.Snapshot("jp-3000")
+		return snapshot.CurrentNodeID == "jp-b"
+	}, "rotator to keep running after request context cancellation")
+}
+
 func TestManagerDialReturnsErrorWhenRetriesAndRotationFail(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -1096,4 +1135,16 @@ func (h *fakeHistory) DeepTestResults(ctx context.Context) (map[string]deeptest.
 func (h *fakeHistory) RecordChannelNodeUse(ctx context.Context, use NodeUse) error {
 	h.uses = append(h.uses, use)
 	return nil
+}
+
+func waitForChannelTest(t *testing.T, condition func() bool, description string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", description)
 }

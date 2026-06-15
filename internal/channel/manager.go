@@ -51,11 +51,14 @@ type Config struct {
 }
 
 type Manager struct {
-	mu        sync.RWMutex
-	cfg       Config
-	channels  map[string]*runtimeChannel
-	cancel    context.CancelFunc
-	rotatorWG sync.WaitGroup
+	mu               sync.RWMutex
+	cfg              Config
+	channels         map[string]*runtimeChannel
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	rotatorCancel    context.CancelFunc
+	rotatorWG        sync.WaitGroup
+	rotationInterval func(config.Channel) time.Duration
 }
 
 type runtimeChannel struct {
@@ -99,8 +102,11 @@ func NewManager(cfg Config) *Manager {
 
 func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Lock()
-	runCtx, cancel := context.WithCancel(ctx)
-	m.cancel = cancel
+	lifecycleCtx, lifecycleCancel := context.WithCancel(ctx)
+	m.lifecycleCtx = lifecycleCtx
+	m.lifecycleCancel = lifecycleCancel
+	runCtx, rotatorCancel := context.WithCancel(lifecycleCtx)
+	m.rotatorCancel = rotatorCancel
 
 	for index, ch := range m.cfg.Channels {
 		if !ch.Enabled {
@@ -118,8 +124,11 @@ func (m *Manager) Start(ctx context.Context) error {
 }
 
 func (m *Manager) Stop(ctx context.Context) error {
-	if m.cancel != nil {
-		m.cancel()
+	if m.lifecycleCancel != nil {
+		m.lifecycleCancel()
+	}
+	if m.rotatorCancel != nil {
+		m.rotatorCancel()
 	}
 	m.rotatorWG.Wait()
 
@@ -139,8 +148,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 }
 
 func (m *Manager) ReplaceChannels(ctx context.Context, channels []config.Channel) error {
-	if m.cancel != nil {
-		m.cancel()
+	if m.rotatorCancel != nil {
+		m.rotatorCancel()
 	}
 	m.rotatorWG.Wait()
 
@@ -184,8 +193,12 @@ func (m *Manager) ReplaceChannels(ctx context.Context, channels []config.Channel
 		current.cfg = ch
 	}
 
-	runCtx, cancel := context.WithCancel(ctx)
-	m.cancel = cancel
+	baseCtx := m.lifecycleCtx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
+	runCtx, rotatorCancel := context.WithCancel(baseCtx)
+	m.rotatorCancel = rotatorCancel
 	m.startRotators(runCtx)
 	return nil
 }
@@ -538,6 +551,12 @@ func (m *Manager) startRotators(ctx context.Context) {
 		}
 		channelID := ch.ID
 		interval := time.Duration(ch.RotateMinutes) * time.Minute
+		if m.rotationInterval != nil {
+			interval = m.rotationInterval(ch)
+		}
+		if interval <= 0 {
+			continue
+		}
 		m.rotatorWG.Add(1)
 		go func() {
 			defer m.rotatorWG.Done()
