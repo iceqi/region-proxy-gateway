@@ -594,31 +594,48 @@ func (m *Manager) rotateLocked(ctx context.Context, channelID string) error {
 			ch.err = fmt.Sprintf("refresh nodes before rotation failed: %v", err)
 		}
 	}
-	occupiedExitIPs := m.currentExitIPsLocked()
-	n, err := m.selectRotationNode(ctx, ch.cfg, ch.currentNode.ID, occupiedExitIPs)
-	if err != nil {
-		ch.lastRotationAt = time.Now()
-		ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
-		return fmt.Errorf("%s: %w", ch.err, err)
+	return m.rotateThroughCandidatesLocked(ctx, channelID, ch)
+}
+
+func (m *Manager) rotateThroughCandidatesLocked(ctx context.Context, channelID string, ch *runtimeChannel) error {
+	tried := map[string]struct{}{}
+	var lastErr error
+	for {
+		currentNodeID := ch.currentNode.ID
+		if currentNodeID != "" {
+			tried[currentNodeID] = struct{}{}
+		}
+		occupiedExitIPs := m.currentExitIPsLocked()
+		n, err := m.selectRotationNodeAvoidingLocked(ctx, ch.cfg, currentNodeID, tried, occupiedExitIPs)
+		if err != nil {
+			ch.lastRotationAt = time.Now()
+			ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
+			if lastErr != nil {
+				return fmt.Errorf("%s: %w; no more candidates: %v", ch.err, lastErr, err)
+			}
+			return fmt.Errorf("%s: %w", ch.err, err)
+		}
+		tried[n.ID] = struct{}{}
+		if n.ID == currentNodeID {
+			now := time.Now()
+			ch.lastRotationAt = now
+			ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
+			return fmt.Errorf("%s", ch.err)
+		}
+		if err := ch.tunnel.Switch(ctx, n); err != nil {
+			ch.lastRotationAt = time.Now()
+			ch.err = err.Error()
+			lastErr = err
+			continue
+		}
+		ch.lastNode = ch.currentNode
+		ch.currentNode = n
+		ch.startedAt = time.Now()
+		ch.lastRotationAt = ch.startedAt
+		ch.err = ""
+		m.recordUse(ctx, channelID, n, ch.startedAt, ch.startedAt)
+		return nil
 	}
-	if n.ID == ch.currentNode.ID {
-		now := time.Now()
-		ch.lastRotationAt = now
-		ch.err = fmt.Sprintf("no alternative node available for region %q", ch.cfg.Region)
-		return fmt.Errorf("%s", ch.err)
-	}
-	if err := ch.tunnel.Switch(ctx, n); err != nil {
-		ch.lastRotationAt = time.Now()
-		ch.err = err.Error()
-		return err
-	}
-	ch.lastNode = ch.currentNode
-	ch.currentNode = n
-	ch.startedAt = time.Now()
-	ch.lastRotationAt = ch.startedAt
-	ch.err = ""
-	m.recordUse(ctx, ch.cfg.ID, n, ch.startedAt, ch.startedAt)
-	return nil
 }
 
 func (m *Manager) selectNode(ctx context.Context, ch config.Channel) (node.Node, error) {
@@ -662,6 +679,7 @@ func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch confi
 	if m.cfg.Nodes == nil {
 		return node.Node{}, fmt.Errorf("node store is required")
 	}
+	deepResults := m.deepTestResults(ctx)
 	var best node.Node
 	found := false
 	for _, candidate := range m.cfg.Nodes.CandidatesByRegion(ch.Region, "", 0) {
@@ -677,7 +695,7 @@ func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch confi
 		if _, ok := avoided[candidate.ID]; ok {
 			continue
 		}
-		if !found || betterRotationNode(candidate, best, map[string]deeptest.Result{}) {
+		if !found || betterRotationNode(candidate, best, deepResults) {
 			best = candidate
 			found = true
 		}
@@ -686,6 +704,17 @@ func (m *Manager) selectRotationNodeAvoidingLocked(ctx context.Context, ch confi
 		return node.Node{}, fmt.Errorf("no available node for region %q", ch.Region)
 	}
 	return best, nil
+}
+
+func (m *Manager) deepTestResults(ctx context.Context) map[string]deeptest.Result {
+	if m.cfg.History == nil {
+		return map[string]deeptest.Result{}
+	}
+	results, err := m.cfg.History.DeepTestResults(ctx)
+	if err != nil {
+		return map[string]deeptest.Result{}
+	}
+	return results
 }
 
 func (m *Manager) currentExitIPsLocked() map[string]struct{} {
@@ -704,12 +733,7 @@ func (m *Manager) bestRotationNode(ctx context.Context, ch config.Channel, curre
 	if m.cfg.Nodes == nil {
 		return node.Node{}, false
 	}
-	deepResults := map[string]deeptest.Result{}
-	if m.cfg.History != nil {
-		if results, err := m.cfg.History.DeepTestResults(ctx); err == nil {
-			deepResults = results
-		}
-	}
+	deepResults := m.deepTestResults(ctx)
 	all := m.cfg.Nodes.CandidatesByRegion(ch.Region, "", 0)
 	filtered := make([]node.Node, 0, len(all))
 	for _, candidate := range all {

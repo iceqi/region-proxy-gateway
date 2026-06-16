@@ -423,6 +423,46 @@ func TestManagerKeepsRunningWhenOneChannelCannotStart(t *testing.T) {
 	}
 }
 
+func TestManagerRotationContinuesAfterCandidateSwitchFailure(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", Speed: 300, Available: true},
+		{ID: "jp-b", Region: "jp", Speed: 200, Available: true},
+		{ID: "jp-c", Region: "jp", Speed: 100, Available: true},
+	})
+	factory := &recordingFactory{switchErrByNode: map[string]error{"jp-b": fmt.Errorf("candidate failed")}}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			RotateMinutes: 10,
+			SelectionMode: SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	if err := manager.RotateNow(context.Background(), "jp-3000"); err != nil {
+		t.Fatalf("RotateNow should continue after candidate failure: %v", err)
+	}
+
+	snapshot, _ := manager.Snapshot("jp-3000")
+	if snapshot.CurrentNodeID != "jp-c" {
+		t.Fatalf("current node = %q, want jp-c after jp-b switch failure", snapshot.CurrentNodeID)
+	}
+	if got := factory.tunnels[0].switchedNodes; !reflect.DeepEqual(got, []string{"jp-b", "jp-c"}) {
+		t.Fatalf("switched nodes = %#v, want jp-b then jp-c", got)
+	}
+}
+
 func TestManagerRotationFailureKeepsCurrentNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
@@ -1107,6 +1147,7 @@ func TestManagerDialReturnsErrorWhenRetriesAndRotationFail(t *testing.T) {
 type recordingFactory struct {
 	tunnels          []*recordingTunnel
 	switchErr        error
+	switchErrByNode  map[string]error
 	dialErrs         int
 	dialErrsByTunnel []int
 	dialErrByNode    map[string]error
@@ -1118,7 +1159,7 @@ func (f *recordingFactory) New(name string) tunnel.Tunnel {
 	if len(f.dialErrsByTunnel) > len(f.tunnels) {
 		dialErrs = f.dialErrsByTunnel[len(f.tunnels)]
 	}
-	tun := &recordingTunnel{name: name, switchErr: f.switchErr, dialErrs: dialErrs, dialErrByNode: f.dialErrByNode, dialErrByChannel: f.dialErrByChannel}
+	tun := &recordingTunnel{name: name, switchErr: f.switchErr, switchErrByNode: f.switchErrByNode, dialErrs: dialErrs, dialErrByNode: f.dialErrByNode, dialErrByChannel: f.dialErrByChannel}
 	f.tunnels = append(f.tunnels, tun)
 	return tun
 }
@@ -1129,6 +1170,7 @@ type recordingTunnel struct {
 	switchedNode     node.Node
 	switchedNodes    []string
 	switchErr        error
+	switchErrByNode  map[string]error
 	dialErrs         int
 	dialErrByNode    map[string]error
 	dialErrByChannel map[string]error
@@ -1147,12 +1189,15 @@ func (t *recordingTunnel) Stop(ctx context.Context) error {
 }
 
 func (t *recordingTunnel) Switch(ctx context.Context, n node.Node) error {
+	t.switchedNodes = append(t.switchedNodes, n.ID)
 	if t.switchErr != nil {
 		return t.switchErr
 	}
+	if err := t.switchErrByNode[n.ID]; err != nil {
+		return err
+	}
 	t.startedNode = n
 	t.switchedNode = n
-	t.switchedNodes = append(t.switchedNodes, n.ID)
 	return nil
 }
 
