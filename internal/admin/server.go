@@ -701,12 +701,14 @@ func (s *Server) handleExtractProxies(w http.ResponseWriter, r *http.Request) {
 		count = parsed
 	}
 	region := strings.ToLower(strings.TrimSpace(query.Get("region")))
+	rotate := parseBoolQuery(query.Get("rotate"))
 
 	items, cached, err := s.extractProxies(r.Context(), proxyExtractRequest{
 		region: region,
 		scheme: scheme,
 		count:  count,
 		host:   requestHost(r),
+		rotate: rotate,
 	})
 	if err != nil {
 		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
@@ -737,6 +739,7 @@ type proxyExtractRequest struct {
 	scheme string
 	count  int
 	host   string
+	rotate bool
 }
 
 func (r proxyExtractRequest) cacheKey() string {
@@ -747,7 +750,7 @@ func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([
 	ttl := s.proxyExtractCacheTTL()
 	key := req.cacheKey()
 	now := time.Now()
-	if ttl > 0 {
+	if ttl > 0 && !req.rotate {
 		s.proxyExtractMu.Lock()
 		if s.proxyExtract.key == key && now.Before(s.proxyExtract.expiresAt) && len(s.proxyExtract.items) >= req.count {
 			items := append([]proxyExtractItem(nil), s.proxyExtract.items[:req.count]...)
@@ -756,10 +759,19 @@ func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([
 		}
 		s.proxyExtractMu.Unlock()
 	}
+	rotated := map[string]struct{}{}
+	if req.rotate {
+		rotated = s.rotateExtractChannels(ctx, req)
+	}
 
 	candidates := s.extractCandidates(req)
 	items := make([]proxyExtractItem, 0, req.count)
 	for _, item := range candidates {
+		if req.rotate {
+			if _, ok := rotated[item.ChannelID]; !ok {
+				continue
+			}
+		}
 		validateCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err := s.validateExtractedProxy(validateCtx, item)
 		cancel()
@@ -775,12 +787,43 @@ func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([
 	if len(items) == 0 {
 		return nil, false, fmt.Errorf("no validated proxies available")
 	}
-	if ttl > 0 {
+	if ttl > 0 && !req.rotate {
 		s.proxyExtractMu.Lock()
 		s.proxyExtract = proxyExtractCache{key: key, expiresAt: time.Now().Add(ttl), items: append([]proxyExtractItem(nil), items...)}
 		s.proxyExtractMu.Unlock()
 	}
 	return items, false, nil
+}
+
+func (s *Server) rotateExtractChannels(ctx context.Context, req proxyExtractRequest) map[string]struct{} {
+	rotated := map[string]struct{}{}
+	if s.channels == nil {
+		return rotated
+	}
+	for _, snapshot := range s.channelList() {
+		if !snapshot.Enabled {
+			continue
+		}
+		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
+			continue
+		}
+		rotateCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := s.channels.RotateNow(rotateCtx, snapshot.ID)
+		cancel()
+		if err == nil {
+			rotated[snapshot.ID] = struct{}{}
+		}
+	}
+	return rotated
+}
+
+func parseBoolQuery(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {

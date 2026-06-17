@@ -458,7 +458,7 @@ const indexHTML = `<!doctype html>
         },
         extractApiExample() {
           const token = this.settings.proxy_extract_api_token || 'YOUR_TOKEN';
-          return window.location.origin + apiBase + '/proxies/extract?token=' + encodeURIComponent(token) + '&format=text&scheme=http&count=1';
+          return window.location.origin + apiBase + 'proxies/extract?token=' + encodeURIComponent(token) + '&format=text&scheme=http&count=1&rotate=1';
         },
         switchDialogNodes() {
           if (!this.channelSwitchDialog.channel) return [];

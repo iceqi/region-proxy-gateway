@@ -198,8 +198,31 @@ func TestExtractProxiesSkipsValidationFailures(t *testing.T) {
 	}
 }
 
-func TestExtractProxiesUsesConfiguredShortCache(t *testing.T) {
-	nodes, manager := newAdminTestManager(t)
+func TestExtractProxiesRotateParameterBypassesCacheAndSwitchesNode(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-one", Available: true},
+		{ID: "jp-2", Region: "jp", IP: "203.0.113.11", Hostname: "jp-two", Available: true},
+	})
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: config.SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes: nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return tunnel.NewFake(name)
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
 	cfg := config.Default()
 	cfg.ProxyExtractCacheTTL = "30s"
 	calls := 0
@@ -208,8 +231,10 @@ func TestExtractProxiesUsesConfiguredShortCache(t *testing.T) {
 		return nil
 	}))
 
+	var exits []string
+
 	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1&rotate=1", nil)
 		req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 		rec := httptest.NewRecorder()
 
@@ -218,9 +243,26 @@ func TestExtractProxiesUsesConfiguredShortCache(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("request %d status = %d body=%s", i+1, rec.Code, rec.Body.String())
 		}
+		var body struct {
+			Proxies []proxyExtractItem `json:"proxies"`
+			Cached  bool               `json:"cached"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request %d: %v", i+1, err)
+		}
+		if body.Cached {
+			t.Fatalf("request %d cached = true, want rotate request to bypass cache", i+1)
+		}
+		if len(body.Proxies) != 1 {
+			t.Fatalf("request %d proxies = %+v, want one", i+1, body.Proxies)
+		}
+		exits = append(exits, body.Proxies[0].CurrentExitIP)
 	}
-	if calls != 1 {
-		t.Fatalf("validator calls = %d, want one call due to cache", calls)
+	if calls != 2 {
+		t.Fatalf("validator calls = %d, want rotate requests revalidated", calls)
+	}
+	if exits[0] == exits[1] {
+		t.Fatalf("exit IPs = %+v, want rotate parameter to switch node", exits)
 	}
 }
 
@@ -728,10 +770,13 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "module-card", "section-icon", "module-chip", "table-shell", "settings-grid", "settings-save", "rememberCredentials", "adminAuth"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "module-card", "section-icon", "module-chip", "table-shell", "settings-grid", "settings-save", "rememberCredentials", "adminAuth", "apiBase + 'proxies/extract", "rotate=1"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
+	}
+	if strings.Contains(rec.Body.String(), "apiBase + '/proxies/extract") {
+		t.Fatalf("admin html should not generate api//proxies extract URLs")
 	}
 	if !strings.Contains(rec.Body.String(), "date.getFullYear() <= 1") {
 		t.Fatalf("admin html should hide Go zero time values")
