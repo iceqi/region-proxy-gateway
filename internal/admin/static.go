@@ -194,6 +194,7 @@ const indexHTML = `<!doctype html>
       <section class="stats">
         <div class="stat"><div class="stat-label">通道</div><div class="stat-value">{{ channels.length }}</div></div>
         <div class="stat"><div class="stat-label">节点</div><div class="stat-value">{{ filteredNodes.length }} / {{ nodes.length }}</div></div>
+        <div class="stat"><div class="stat-label">节点扫描</div><div class="stat-value" style="font-size:16px">{{ nodeScanText }}</div></div>
         <div class="stat"><div class="stat-label">在线连接</div><div class="stat-value">{{ connections.length }}</div></div>
         <div class="stat"><div class="stat-label">深测队列</div><div class="stat-value" style="font-size:16px">{{ deepTestSummary }}</div></div>
         <div class="stat"><div class="stat-label">节点更新间隔</div><div class="stat-value">{{ settings.node_refresh_interval || '-' }}</div></div>
@@ -318,23 +319,31 @@ const indexHTML = `<!doctype html>
                 <div class="gateway-head">
                   <div>
                     <div class="gateway-title">旋转网关代理</div>
-                    <div class="muted">固定入口，每次新连接自动轮换出口 IP。开启通道里的“旋转网关”后会在这里显示复制链接。</div>
+                    <div class="muted">后端自动创建固定入口端口，每次连接从有效节点池选择出口。</div>
                   </div>
-                  <a-tag color="blue">{{ rotatingGatewayChannels.length }} 个入口</a-tag>
+                  <a-tag color="blue">旋转 {{ settings.rotating_gateway_port || '-' }} / API代理 {{ settings.proxy_extract_api_port || '-' }}</a-tag>
                 </div>
-                <a-empty v-if="!rotatingGatewayChannels.length" description="暂无开启旋转网关的通道"></a-empty>
-                <div v-else class="gateway-list">
-                  <div v-for="channel in rotatingGatewayChannels" :key="channel.id" class="gateway-card">
+                <div class="gateway-list">
+                  <div class="gateway-card">
                     <div class="gateway-meta">
-                      <a-tag color="geekblue">{{ channel.id }}</a-tag>
-                      <span class="muted">端口 {{ channel.listen_port }}</span>
-                      <span class="muted">{{ channelRegionText(channel.region) }}</span>
-                      <span class="muted">当前出口 {{ channelExitAddress(channel) }}</span>
+                      <a-tag color="geekblue">旋转网关</a-tag>
+                      <span class="muted">直接作为代理使用</span>
                     </div>
                     <div class="connection-box">
-                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="proxyAddress(channel, 'http')">{{ proxyAddress(channel, 'http') }}</code><a-button size="small" @click="copyText(proxyAddress(channel, 'http'))">复制</a-button></div>
-                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="proxyAddress(channel, 'socks5')">{{ proxyAddress(channel, 'socks5') }}</code><a-button size="small" @click="copyText(proxyAddress(channel, 'socks5'))">复制</a-button></div>
-                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="proxyAddressNoScheme(channel)">{{ proxyAddressNoScheme(channel) }}</code><a-button size="small" @click="copyText(proxyAddressNoScheme(channel))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="settings.rotating_gateway_http">{{ settings.rotating_gateway_http || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_http)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="settings.rotating_gateway_socks5">{{ settings.rotating_gateway_socks5 || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_socks5)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="settings.rotating_gateway_no_scheme">{{ settings.rotating_gateway_no_scheme || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_no_scheme)">复制</a-button></div>
+                    </div>
+                  </div>
+                  <div class="gateway-card">
+                    <div class="gateway-meta">
+                      <a-tag color="purple">API返回代理</a-tag>
+                      <span class="muted">提取 API 返回的固定调用出口</span>
+                    </div>
+                    <div class="connection-box">
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="settings.extract_proxy_http">{{ settings.extract_proxy_http || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_http)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="settings.extract_proxy_socks5">{{ settings.extract_proxy_socks5 || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_socks5)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="settings.extract_proxy_no_scheme">{{ settings.extract_proxy_no_scheme || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_no_scheme)">复制</a-button></div>
                     </div>
                   </div>
                 </div>
@@ -427,6 +436,7 @@ const indexHTML = `<!doctype html>
           nodes: [],
           connections: [],
           deepStats: { pending: 0, running: 0, success: 0, failed: 0 },
+          nodeScan: { running: false, total: 0, success: 0, failed: 0, last_error: '' },
           settings: { node_refresh_interval: '10m', proxy_extract_cache_ttl: '30s', proxy_extract_api_token: '', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
@@ -487,6 +497,10 @@ const indexHTML = `<!doctype html>
         deepTestSummary() {
           const s = this.deepStats || {};
           return '待 ' + Number(s.pending || 0) + ' / 跑 ' + Number(s.running || 0) + ' / 成 ' + Number(s.success || 0) + ' / 败 ' + Number(s.failed || 0);
+        },
+        nodeScanText() {
+          const s = this.nodeScan || {};
+          return (s.running ? '扫描中 ' : '空闲 ') + Number(s.success || 0) + '/' + Number(s.total || 0);
         },
         extractApiExample() {
           const token = this.settings.proxy_extract_api_token || 'YOUR_TOKEN';
@@ -585,6 +599,7 @@ const indexHTML = `<!doctype html>
             this.connections = connections.connections || [];
             this.nodes = nodes.nodes || [];
             this.deepStats = deepStatus.stats || this.deepStats;
+            this.nodeScan = status.node_scan || this.nodeScan;
             if (status.settings) this.settings = Object.assign({}, this.settings, status.settings, { admin_password: '', proxy_password: '' });
           } catch (err) {
             message.error(err.message);

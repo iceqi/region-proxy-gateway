@@ -36,6 +36,7 @@ type Server struct {
 	configPath            string
 	config                config.Config
 	configMu              sync.Mutex
+	nodeScanStatus        func() map[string]any
 	proxyExtractMu        sync.Mutex
 	proxyExtract          proxyExtractCache
 	proxyExtractCursor    map[string]int
@@ -100,6 +101,12 @@ func WithRestarter(restart func(context.Context) error) Option {
 func WithRuntimeReloader(reload func(context.Context) error) Option {
 	return func(s *Server) {
 		s.reloadRuntime = reload
+	}
+}
+
+func WithNodeScanStatus(status func() map[string]any) Option {
+	return func(s *Server) {
+		s.nodeScanStatus = status
 	}
 }
 
@@ -202,6 +209,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"node_count":       len(s.nodes.List()),
 			"connection_count": s.connectionCount(),
 			"settings":         s.safeSettings(),
+			"node_scan":        s.currentNodeScanStatus(),
 		})
 	case "/api/settings":
 		s.writeJSON(w, http.StatusOK, map[string]any{"settings": s.safeSettings()})
@@ -224,6 +232,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (s *Server) currentNodeScanStatus() map[string]any {
+	if s.nodeScanStatus == nil {
+		return map[string]any{"running": false}
+	}
+	return s.nodeScanStatus()
 }
 
 func (s *Server) authorized(r *http.Request) bool {
@@ -631,7 +646,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	s.applyAuthConfig(cfg)
 	reloadOK, reloadError := s.reloadRuntimeState(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"settings":         s.safeSettings(),
+		"settings":         s.safeSettingsRedacted(),
 		"runtime_reloaded": reloadOK,
 		"runtime_error":    reloadError,
 		"restart_required": false,
@@ -648,7 +663,7 @@ func (s *Server) handleGenerateProxyExtractToken(w http.ResponseWriter, r *http.
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"settings": s.safeSettingsWith(cfg),
+		"settings": redactedSettings(s.safeSettingsWith(cfg)),
 		"token":    cfg.ProxyExtractAPIToken,
 	})
 }
@@ -884,7 +899,12 @@ func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
 }
 
 func (s *Server) proxyEntrySnapshot(req proxyExtractRequest) (channel.Snapshot, bool) {
-	snapshots := s.channelList()
+	snapshots := s.runtimeChannelList()
+	for _, snapshot := range snapshots {
+		if snapshot.ID == "extract-api-proxy" && snapshot.Enabled {
+			return snapshot, true
+		}
+	}
 	for _, snapshot := range snapshots {
 		if snapshot.Enabled && snapshot.TunnelStatus.Ready {
 			return snapshot, true
@@ -1175,7 +1195,26 @@ func (s *Server) channelList() []channel.Snapshot {
 	if s.channels == nil {
 		return []channel.Snapshot{}
 	}
+	snapshots := s.channels.Snapshots()
+	filtered := make([]channel.Snapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if isSystemProxyChannel(snapshot.ID) {
+			continue
+		}
+		filtered = append(filtered, snapshot)
+	}
+	return filtered
+}
+
+func (s *Server) runtimeChannelList() []channel.Snapshot {
+	if s.channels == nil {
+		return []channel.Snapshot{}
+	}
 	return s.channels.Snapshots()
+}
+
+func isSystemProxyChannel(id string) bool {
+	return id == "rotating-gateway" || id == "extract-api-proxy"
 }
 
 type channelView struct {
@@ -1402,42 +1441,89 @@ func compactNode(n node.Node) nodeView {
 }
 
 type settingsView struct {
-	NodeRefreshInterval  string `json:"node_refresh_interval"`
-	ProxyExtractCacheTTL string `json:"proxy_extract_cache_ttl"`
-	ProxyExtractAPIToken string `json:"proxy_extract_api_token"`
-	AdminPath            string `json:"admin_path"`
-	AdminUsername        string `json:"admin_username"`
-	ProxyUsername        string `json:"proxy_username"`
-	AdminPasswordSet     bool   `json:"admin_password_set"`
-	ProxyPasswordSet     bool   `json:"proxy_password_set"`
+	NodeRefreshInterval     string `json:"node_refresh_interval"`
+	ProxyExtractCacheTTL    string `json:"proxy_extract_cache_ttl"`
+	ProxyExtractAPIToken    string `json:"proxy_extract_api_token"`
+	RotatingGatewayHost     string `json:"rotating_gateway_host"`
+	RotatingGatewayPort     int    `json:"rotating_gateway_port"`
+	ProxyExtractAPIHost     string `json:"proxy_extract_api_host"`
+	ProxyExtractAPIPort     int    `json:"proxy_extract_api_port"`
+	RotatingGatewayHTTP     string `json:"rotating_gateway_http"`
+	RotatingGatewaySOCKS5   string `json:"rotating_gateway_socks5"`
+	RotatingGatewayNoScheme string `json:"rotating_gateway_no_scheme"`
+	ExtractProxyHTTP        string `json:"extract_proxy_http"`
+	ExtractProxySOCKS5      string `json:"extract_proxy_socks5"`
+	ExtractProxyNoScheme    string `json:"extract_proxy_no_scheme"`
+	AdminPath               string `json:"admin_path"`
+	AdminUsername           string `json:"admin_username"`
+	ProxyUsername           string `json:"proxy_username"`
+	AdminPasswordSet        bool   `json:"admin_password_set"`
+	ProxyPasswordSet        bool   `json:"proxy_password_set"`
 }
 
 func (s *Server) safeSettings() settingsView {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	return settingsView{
+	view := settingsView{
 		NodeRefreshInterval:  s.config.NodeRefreshInterval,
 		ProxyExtractCacheTTL: s.config.ProxyExtractCacheTTL,
 		ProxyExtractAPIToken: s.config.ProxyExtractAPIToken,
+		RotatingGatewayHost:  s.config.RotatingGatewayHost,
+		RotatingGatewayPort:  s.config.RotatingGatewayPort,
+		ProxyExtractAPIHost:  s.config.ProxyExtractAPIHost,
+		ProxyExtractAPIPort:  s.config.ProxyExtractAPIPort,
 		AdminPath:            s.config.AdminPath,
 		AdminUsername:        s.config.AdminUsername,
 		ProxyUsername:        s.config.ProxyUsername,
 		AdminPasswordSet:     s.config.AdminPassword != "",
 		ProxyPasswordSet:     s.config.ProxyPassword != "",
 	}
+	view.fillProxyLinks(s.config)
+	return view
+}
+
+func (s *Server) safeSettingsRedacted() settingsView {
+	return redactedSettings(s.safeSettings())
+}
+
+func redactedSettings(view settingsView) settingsView {
+	view.RotatingGatewayHTTP = ""
+	view.RotatingGatewaySOCKS5 = ""
+	view.RotatingGatewayNoScheme = ""
+	view.ExtractProxyHTTP = ""
+	view.ExtractProxySOCKS5 = ""
+	view.ExtractProxyNoScheme = ""
+	return view
 }
 
 func (s *Server) safeSettingsWith(cfg config.Config) settingsView {
-	return settingsView{
+	view := settingsView{
 		NodeRefreshInterval:  cfg.NodeRefreshInterval,
 		ProxyExtractCacheTTL: cfg.ProxyExtractCacheTTL,
 		ProxyExtractAPIToken: cfg.ProxyExtractAPIToken,
+		RotatingGatewayHost:  cfg.RotatingGatewayHost,
+		RotatingGatewayPort:  cfg.RotatingGatewayPort,
+		ProxyExtractAPIHost:  cfg.ProxyExtractAPIHost,
+		ProxyExtractAPIPort:  cfg.ProxyExtractAPIPort,
 		AdminPath:            cfg.AdminPath,
 		AdminUsername:        cfg.AdminUsername,
 		ProxyUsername:        cfg.ProxyUsername,
 		AdminPasswordSet:     cfg.AdminPassword != "",
 		ProxyPasswordSet:     cfg.ProxyPassword != "",
 	}
+	view.fillProxyLinks(cfg)
+	return view
+}
+
+func (v *settingsView) fillProxyLinks(cfg config.Config) {
+	rotating := proxyAuthHost(cfg.ProxyUsername, cfg.ProxyPassword, cfg.RotatingGatewayHost, cfg.RotatingGatewayPort)
+	extract := proxyAuthHost(cfg.ProxyUsername, cfg.ProxyPassword, cfg.ProxyExtractAPIHost, cfg.ProxyExtractAPIPort)
+	v.RotatingGatewayHTTP = "http://" + rotating
+	v.RotatingGatewaySOCKS5 = "socks5://" + rotating
+	v.RotatingGatewayNoScheme = rotating
+	v.ExtractProxyHTTP = "http://" + extract
+	v.ExtractProxySOCKS5 = "socks5://" + extract
+	v.ExtractProxyNoScheme = extract
 }
 
 func randomToken(length int) string {

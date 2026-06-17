@@ -28,6 +28,10 @@ type Config struct {
 	AdminPassword        string    `json:"admin_password"`
 	ProxyUsername        string    `json:"proxy_username"`
 	ProxyPassword        string    `json:"proxy_password"`
+	RotatingGatewayHost  string    `json:"rotating_gateway_host"`
+	RotatingGatewayPort  int       `json:"rotating_gateway_port"`
+	ProxyExtractAPIHost  string    `json:"proxy_extract_api_host"`
+	ProxyExtractAPIPort  int       `json:"proxy_extract_api_port"`
 	ProxyExtractAPIToken string    `json:"proxy_extract_api_token"`
 	NodeRefreshInterval  string    `json:"node_refresh_interval"`
 	ProxyExtractCacheTTL string    `json:"proxy_extract_cache_ttl"`
@@ -59,6 +63,10 @@ func Default() Config {
 		AdminPassword:        "change-me-admin",
 		ProxyUsername:        "proxy",
 		ProxyPassword:        "change-me-proxy",
+		RotatingGatewayHost:  "0.0.0.0",
+		RotatingGatewayPort:  39001,
+		ProxyExtractAPIHost:  "0.0.0.0",
+		ProxyExtractAPIPort:  39002,
 		ProxyExtractAPIToken: randomToken(32),
 		NodeRefreshInterval:  "10m",
 		ProxyExtractCacheTTL: "30s",
@@ -89,7 +97,12 @@ func LoadOrCreate(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg = Default()
-	cfg.AdminPort = chooseAdminPort(cfg.AdminHost, cfg.AdminPort, usedChannelPorts(cfg.Channels))
+	blocked := usedChannelPorts(cfg.Channels)
+	cfg.AdminPort = chooseAdminPort(cfg.AdminHost, cfg.AdminPort, blocked)
+	blocked[cfg.AdminPort] = struct{}{}
+	cfg.RotatingGatewayPort = chooseAdminPort(cfg.RotatingGatewayHost, randomPort(20000, 60999), blocked)
+	blocked[cfg.RotatingGatewayPort] = struct{}{}
+	cfg.ProxyExtractAPIPort = chooseAdminPort(cfg.ProxyExtractAPIHost, randomPort(20000, 60999), blocked)
 	cfg.AdminPath = randomAdminPath()
 	if err := Save(path, cfg); err != nil {
 		return Config{}, err
@@ -222,6 +235,18 @@ func (c *Config) normalize() {
 	if c.OpenVPNCommand == "" {
 		c.OpenVPNCommand = "openvpn"
 	}
+	if c.RotatingGatewayHost == "" {
+		c.RotatingGatewayHost = "0.0.0.0"
+	}
+	if c.RotatingGatewayPort == 0 {
+		c.RotatingGatewayPort = 39001
+	}
+	if c.ProxyExtractAPIHost == "" {
+		c.ProxyExtractAPIHost = "0.0.0.0"
+	}
+	if c.ProxyExtractAPIPort == 0 {
+		c.ProxyExtractAPIPort = 39002
+	}
 	if c.TunnelBackend == "" {
 		c.TunnelBackend = TunnelBackendFake
 	}
@@ -268,6 +293,12 @@ func (c Config) Validate() error {
 	if c.ProxyPassword == "" {
 		return fmt.Errorf("proxy password is required")
 	}
+	if c.RotatingGatewayPort < 1 || c.RotatingGatewayPort > 65535 {
+		return fmt.Errorf("rotating gateway port must be 1-65535")
+	}
+	if c.ProxyExtractAPIPort < 1 || c.ProxyExtractAPIPort > 65535 {
+		return fmt.Errorf("proxy extract api port must be 1-65535")
+	}
 	if strings.TrimSpace(c.ProxyExtractAPIToken) == "" {
 		return fmt.Errorf("proxy extract api token is required")
 	}
@@ -282,7 +313,10 @@ func (c Config) Validate() error {
 	if _, err := ParseProxyExtractCacheTTL(c.ProxyExtractCacheTTL); err != nil {
 		return err
 	}
-	ports := map[int]string{c.AdminPort: "admin"}
+	ports := map[int]string{c.AdminPort: "admin", c.RotatingGatewayPort: "rotating_gateway", c.ProxyExtractAPIPort: "proxy_extract_api"}
+	if c.RotatingGatewayPort == c.ProxyExtractAPIPort {
+		return fmt.Errorf("port %d is used by both rotating_gateway and proxy_extract_api", c.RotatingGatewayPort)
+	}
 	ids := map[string]struct{}{}
 	for _, ch := range c.Channels {
 		if err := ch.Validate(); err != nil {

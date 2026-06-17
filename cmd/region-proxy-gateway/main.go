@@ -30,13 +30,66 @@ import (
 var version = "dev"
 
 type services struct {
-	admin        *admin.Server
-	nodes        *node.Store
-	channels     *channel.Manager
-	tracker      *connection.Tracker
-	storage      *storage.Store
-	proxyRuntime *proxyRuntime
-	configPath   string
+	admin          *admin.Server
+	nodes          *node.Store
+	channels       *channel.Manager
+	tracker        *connection.Tracker
+	storage        *storage.Store
+	proxyRuntime   *proxyRuntime
+	gatewayRuntime *proxyRuntime
+	configPath     string
+}
+
+type nodeScanState struct {
+	mu        sync.Mutex
+	running   bool
+	total     int
+	success   int
+	failed    int
+	startedAt time.Time
+	endedAt   time.Time
+	lastError string
+}
+
+func (s *nodeScanState) start() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running = true
+	s.total = 0
+	s.success = 0
+	s.failed = 0
+	s.startedAt = time.Now()
+	s.endedAt = time.Time{}
+	s.lastError = ""
+}
+
+func (s *nodeScanState) progress(total int, success int, failed int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.total = total
+	s.success = success
+	s.failed = failed
+}
+
+func (s *nodeScanState) finish(total int, success int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.running = false
+	s.total = total
+	s.success = success
+	if total >= success {
+		s.failed = total - success
+	}
+	s.endedAt = time.Now()
+	if err != nil {
+		s.lastError = err.Error()
+	}
+}
+
+func (s *nodeScanState) snapshot() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return map[string]any{"running": s.running, "total": s.total, "success": s.success, "failed": s.failed, "started_at": s.startedAt, "ended_at": s.endedAt, "last_error": s.lastError}
 }
 
 func main() {
@@ -70,6 +123,9 @@ func main() {
 		_ = adminServer.Shutdown(shutdownCtx)
 		if services.proxyRuntime != nil {
 			_ = services.proxyRuntime.Stop(shutdownCtx)
+		}
+		if services.gatewayRuntime != nil {
+			_ = services.gatewayRuntime.Stop(shutdownCtx)
 		}
 	}()
 	if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -114,24 +170,18 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		return services{}, err
 	}
 	loadedNodes = freshNodes(loadedNodes, refreshInterval, time.Now())
-	if len(loadedNodes) == 0 {
-		loadedNodes, err = loadNodes(ctx, cfg)
-		if err != nil {
-			_ = database.Close()
-			return services{}, err
-		}
-		if err := database.ReplaceNodes(ctx, loadedNodes); err != nil {
-			log.Printf("cache nodes failed: %v", err)
-		}
-	}
 	nodes.Replace(loadedNodes)
 	lastNodeRefresh := latestNodeTestedAt(loadedNodes)
 	refreshMu := sync.Mutex{}
+	scanState := &nodeScanState{}
 	forceRefreshNodes := func(ctx context.Context) ([]node.Node, error) {
-		loaded, err := loadNodes(ctx, cfg)
+		scanState.start()
+		loaded, err := loadNodesWithProgress(ctx, cfg, scanState.progress)
 		if err != nil {
+			scanState.finish(0, 0, err)
 			return nil, err
 		}
+		scanState.finish(len(loaded), len(loaded), nil)
 		nodes.Replace(loaded)
 		lastNodeRefresh = latestNodeTestedAt(loaded)
 		if err := database.ReplaceNodes(ctx, loaded); err != nil {
@@ -151,8 +201,9 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		_, err := forceRefreshNodes(ctx)
 		return err
 	}
+	managerChannels := append(append([]config.Channel(nil), channels...), gatewayChannels(cfg)...)
 	manager := channel.NewManager(channel.Config{
-		Channels:      channels,
+		Channels:      managerChannels,
 		Nodes:         nodes,
 		TunnelFactory: tunnelFactory(cfg),
 		NodeChecker:   checker.Check,
@@ -164,6 +215,16 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	if err := manager.Start(ctx); err != nil {
 		return services{}, err
 	}
+	go func() {
+		if len(nodes.List()) > 0 {
+			return
+		}
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		if _, err := forceRefreshNodes(ctx); err != nil {
+			log.Printf("initial background node scan failed: %v", err)
+		}
+	}()
 	startNodeUpdater(ctx, cfg, func(updateCtx context.Context) error {
 		refreshMu.Lock()
 		defer refreshMu.Unlock()
@@ -189,6 +250,11 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		_ = database.Close()
 		return services{}, err
 	}
+	gatewayRuntime := newProxyRuntime(cfg.ProxyUsername, cfg.ProxyPassword, manager, tracker)
+	if err := gatewayRuntime.Sync(ctx, gatewayChannels(cfg)); err != nil {
+		_ = database.Close()
+		return services{}, err
+	}
 	reloadRuntime := func(reloadCtx context.Context) error {
 		nextCfg, err := config.Load(cfgPath)
 		if err == nil {
@@ -200,10 +266,14 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		if err != nil {
 			return err
 		}
-		if err := manager.ReplaceChannels(ctx, nextChannels); err != nil {
+		nextManagerChannels := append(append([]config.Channel(nil), nextChannels...), gatewayChannels(nextCfg)...)
+		if err := manager.ReplaceChannels(ctx, nextManagerChannels); err != nil {
 			return err
 		}
-		return proxyRuntime.Sync(ctx, nextChannels)
+		if err := proxyRuntime.Sync(ctx, nextChannels); err != nil {
+			return err
+		}
+		return gatewayRuntime.Sync(ctx, gatewayChannels(nextCfg))
 	}
 
 	return services{
@@ -237,19 +307,36 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 				return nil
 			}),
 			admin.WithRuntimeReloader(reloadRuntime),
+			admin.WithNodeScanStatus(scanState.snapshot),
 		),
-		nodes:        nodes,
-		channels:     manager,
-		tracker:      tracker,
-		storage:      database,
-		proxyRuntime: proxyRuntime,
-		configPath:   cfgPath,
+		nodes:          nodes,
+		channels:       manager,
+		tracker:        tracker,
+		storage:        database,
+		proxyRuntime:   proxyRuntime,
+		gatewayRuntime: gatewayRuntime,
+		configPath:     cfgPath,
 	}, nil
 }
 
+func gatewayChannels(cfg config.Config) []config.Channel {
+	return []config.Channel{
+		{ID: "rotating-gateway", ListenHost: cfg.RotatingGatewayHost, ListenPort: cfg.RotatingGatewayPort, Region: "*", SelectionMode: config.SelectionAuto, RotateOnDial: true, Enabled: true},
+		{ID: "extract-api-proxy", ListenHost: cfg.ProxyExtractAPIHost, ListenPort: cfg.ProxyExtractAPIPort, Region: "*", SelectionMode: config.SelectionAuto, RotateOnDial: true, Enabled: true},
+	}
+}
+
 func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
+	return loadNodesWithProgress(ctx, cfg, nil)
+}
+
+func loadNodesWithProgress(ctx context.Context, cfg config.Config, progress func(total int, success int, failed int)) ([]node.Node, error) {
 	if cfg.TunnelBackend == config.TunnelBackendFake {
-		return demoNodes(), nil
+		nodes := demoNodes()
+		if progress != nil {
+			progress(len(nodes), len(nodes), 0)
+		}
+		return nodes, nil
 	}
 	fetched, err := (vpngate.Client{}).Fetch(ctx)
 	if err != nil {
@@ -265,9 +352,9 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 	enriched, err := (ipinfo.Client{}).Enrich(ctx, prefiltered)
 	if err != nil {
 		log.Printf("ip info enrich failed: %v", err)
-		return filterConnectableNodes(ctx, prefiltered, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
+		return filterConnectableNodes(ctx, prefiltered, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}}, progress)
 	}
-	return filterConnectableNodes(ctx, enriched, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
+	return filterConnectableNodes(ctx, enriched, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}}, progress)
 }
 
 func prefilterNodes(ctx context.Context, nodes []node.Node, checker nodecheck.Checker, workers int) []node.Node {
@@ -346,9 +433,13 @@ func (t openVPNNodeConnectivityTester) Test(ctx context.Context, n node.Node) er
 	return nil
 }
 
-func filterConnectableNodes(ctx context.Context, nodes []node.Node, tester nodeConnectivityTester) ([]node.Node, error) {
+func filterConnectableNodes(ctx context.Context, nodes []node.Node, tester nodeConnectivityTester, progress ...func(total int, success int, failed int)) ([]node.Node, error) {
 	if tester == nil {
 		return append([]node.Node(nil), nodes...), nil
+	}
+	var progressFn func(total int, success int, failed int)
+	if len(progress) > 0 {
+		progressFn = progress[0]
 	}
 	type result struct {
 		index int
@@ -398,9 +489,17 @@ func filterConnectableNodes(ctx context.Context, nodes []node.Node, tester nodeC
 	close(results)
 
 	byIndex := make(map[int]node.Node, len(nodes))
+	success := 0
+	failed := 0
 	for result := range results {
 		if result.ok {
 			byIndex[result.index] = result.node
+			success++
+		} else {
+			failed++
+		}
+		if progressFn != nil {
+			progressFn(len(nodes), success, failed)
 		}
 	}
 	filtered := make([]node.Node, 0, len(byIndex))

@@ -62,6 +62,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	}
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
@@ -109,6 +110,7 @@ func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
 	}
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
 	defer services.storage.Close()
 
 	req := httptest.NewRequest(http.MethodPost, cfg.AdminPath+"/api/channels", strings.NewReader(`{"id":"us-3001","listen_host":"127.0.0.1","listen_port":12348,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
@@ -137,6 +139,7 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 	}
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
 
 	services.tracker.Start("127.0.0.1:50000", "http", "jp-3000", "example.com:443")
 
@@ -179,6 +182,7 @@ func TestBuildServicesMigratesConfigChannelsToSQLite(t *testing.T) {
 	}
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
 	defer services.storage.Close()
 
 	loaded, err := config.Load(cfgPath)
