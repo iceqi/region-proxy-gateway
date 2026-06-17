@@ -310,7 +310,7 @@ const indexHTML = `<!doctype html>
                 <div class="settings-item"><a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item></div>
                 <div class="settings-item"><a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
                 <div class="settings-item"><a-form-item label="提取 Token"><a-input-group compact><a-input v-model:value="settings.proxy_extract_api_token" placeholder="留空不修改" style="width:calc(100% - 160px)"></a-input><a-button @click="generateExtractToken">生成</a-button><a-button @click="copyText(settings.proxy_extract_api_token)">复制</a-button></a-input-group></a-form-item></div>
-                <div class="settings-item"><a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="10m"></a-input></a-form-item></div>
                 <div class="settings-item"><a-form-item label="提取缓存 TTL"><a-input v-model:value="settings.proxy_extract_cache_ttl" placeholder="30s"></a-input></a-form-item></div>
               </div>
               <a-alert type="info" show-icon style="margin-bottom: 16px" :message="'API 提取代理：' + extractApiExample"></a-alert>
@@ -427,7 +427,7 @@ const indexHTML = `<!doctype html>
           nodes: [],
           connections: [],
           deepStats: { pending: 0, running: 0, success: 0, failed: 0 },
-          settings: { node_refresh_interval: '20m', proxy_extract_cache_ttl: '30s', proxy_extract_api_token: '', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
+          settings: { node_refresh_interval: '10m', proxy_extract_cache_ttl: '30s', proxy_extract_api_token: '', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
           channelForm: this.emptyChannelForm(),

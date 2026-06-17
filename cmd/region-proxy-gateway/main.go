@@ -81,6 +81,10 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	if err := cfg.Validate(); err != nil {
 		return services{}, err
 	}
+	refreshInterval, err := config.ParseNodeRefreshInterval(cfg.NodeRefreshInterval)
+	if err != nil {
+		return services{}, err
+	}
 
 	database, err := storage.Open(cfg.DatabasePath)
 	if err != nil {
@@ -109,6 +113,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		_ = database.Close()
 		return services{}, err
 	}
+	loadedNodes = freshNodes(loadedNodes, refreshInterval, time.Now())
 	if len(loadedNodes) == 0 {
 		loadedNodes, err = loadNodes(ctx, cfg)
 		if err != nil {
@@ -120,19 +125,31 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		}
 	}
 	nodes.Replace(loadedNodes)
+	lastNodeRefresh := latestNodeTestedAt(loadedNodes)
+	refreshMu := sync.Mutex{}
+	forceRefreshNodes := func(ctx context.Context) ([]node.Node, error) {
+		loaded, err := loadNodes(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		nodes.Replace(loaded)
+		lastNodeRefresh = latestNodeTestedAt(loaded)
+		if err := database.ReplaceNodes(ctx, loaded); err != nil {
+			log.Printf("cache refreshed nodes failed: %v", err)
+		}
+		return loaded, nil
+	}
 
 	tracker := connection.NewTracker()
 	checker := nodecheck.Checker{Timeout: 3 * time.Second}
 	refreshNodes := func(ctx context.Context) error {
-		loaded, err := loadNodes(ctx, cfg)
-		if err != nil {
-			return err
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		if len(nodes.List()) > 0 && !lastNodeRefresh.IsZero() && time.Since(lastNodeRefresh) < refreshInterval {
+			return nil
 		}
-		nodes.Replace(loaded)
-		if err := database.ReplaceNodes(ctx, loaded); err != nil {
-			log.Printf("cache refreshed nodes failed: %v", err)
-		}
-		return nil
+		_, err := forceRefreshNodes(ctx)
+		return err
 	}
 	manager := channel.NewManager(channel.Config{
 		Channels:      channels,
@@ -147,7 +164,12 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 	if err := manager.Start(ctx); err != nil {
 		return services{}, err
 	}
-	startNodeUpdater(ctx, cfg, nodes, database)
+	startNodeUpdater(ctx, cfg, func(updateCtx context.Context) error {
+		refreshMu.Lock()
+		defer refreshMu.Unlock()
+		_, err := forceRefreshNodes(updateCtx)
+		return err
+	})
 	if err := database.ResetRunningDeepTestJobs(ctx); err != nil {
 		log.Printf("reset running deep test jobs failed: %v", err)
 	}
@@ -189,10 +211,13 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 			admin.WithConfig(cfgPath, cfg),
 			admin.WithStorage(database),
 			admin.WithNodeRefresher(func(ctx context.Context) ([]node.Node, error) {
-				if err := refreshNodes(ctx); err != nil {
+				refreshMu.Lock()
+				defer refreshMu.Unlock()
+				loaded, err := forceRefreshNodes(ctx)
+				if err != nil {
 					return nil, err
 				}
-				return nodes.List(), nil
+				return loaded, nil
 			}),
 			admin.WithNodeChecker(nodecheck.Checker{Timeout: 3 * time.Second}.Check),
 			admin.WithRestarter(func(ctx context.Context) error {
@@ -226,19 +251,74 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 	if cfg.TunnelBackend == config.TunnelBackendFake {
 		return demoNodes(), nil
 	}
-	nodes, err := (vpngate.Client{}).Fetch(ctx)
+	fetched, err := (vpngate.Client{}).Fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if len(nodes) == 0 {
+	if len(fetched) == 0 {
 		return nil, fmt.Errorf("vpngate returned no nodes")
 	}
-	enriched, err := (ipinfo.Client{}).Enrich(ctx, nodes)
+	prefiltered := prefilterNodes(ctx, fetched, nodecheck.Checker{Timeout: 3 * time.Second}, 8)
+	if len(prefiltered) == 0 {
+		return nil, fmt.Errorf("no nodes passed lightweight prefilter")
+	}
+	enriched, err := (ipinfo.Client{}).Enrich(ctx, prefiltered)
 	if err != nil {
 		log.Printf("ip info enrich failed: %v", err)
-		return filterConnectableNodes(ctx, nodes, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
+		return filterConnectableNodes(ctx, prefiltered, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
 	}
 	return filterConnectableNodes(ctx, enriched, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
+}
+
+func prefilterNodes(ctx context.Context, nodes []node.Node, checker nodecheck.Checker, workers int) []node.Node {
+	if workers <= 0 {
+		workers = 4
+	}
+	type result struct {
+		index int
+		node  node.Node
+		keep  bool
+	}
+	jobs := make(chan int)
+	results := make(chan result, len(nodes))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				checked := checker.Check(ctx, nodes[index])
+				results <- result{index: index, node: checked, keep: checked.Available}
+			}
+		}()
+	}
+	for index := range nodes {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(results)
+			return nil
+		case jobs <- index:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	byIndex := make(map[int]node.Node, len(nodes))
+	for result := range results {
+		if result.keep {
+			byIndex[result.index] = result.node
+		}
+	}
+	filtered := make([]node.Node, 0, len(byIndex))
+	for index := range nodes {
+		if n, ok := byIndex[index]; ok {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
 }
 
 type nodeConnectivityTester interface {
@@ -332,6 +412,32 @@ func filterConnectableNodes(ctx context.Context, nodes []node.Node, tester nodeC
 	return filtered, nil
 }
 
+func freshNodes(nodes []node.Node, ttl time.Duration, now time.Time) []node.Node {
+	if ttl <= 0 {
+		return append([]node.Node(nil), nodes...)
+	}
+	fresh := make([]node.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if n.LastTestedAt.IsZero() {
+			continue
+		}
+		if now.Sub(n.LastTestedAt) <= ttl {
+			fresh = append(fresh, n)
+		}
+	}
+	return fresh
+}
+
+func latestNodeTestedAt(nodes []node.Node) time.Time {
+	var latest time.Time
+	for _, n := range nodes {
+		if n.LastTestedAt.After(latest) {
+			latest = n.LastTestedAt
+		}
+	}
+	return latest
+}
+
 type proxyRuntime struct {
 	mu            sync.Mutex
 	proxyUsername string
@@ -421,8 +527,8 @@ func proxyListenAddr(ch config.Channel) string {
 	return fmt.Sprintf("%s:%d", ch.ListenHost, ch.ListenPort)
 }
 
-func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store, database *storage.Store) {
-	if store == nil {
+func startNodeUpdater(ctx context.Context, cfg config.Config, refresh func(context.Context) error) {
+	if refresh == nil {
 		return
 	}
 	interval, err := config.ParseNodeRefreshInterval(cfg.NodeRefreshInterval)
@@ -438,18 +544,11 @@ func startNodeUpdater(ctx context.Context, cfg config.Config, store *node.Store,
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				nodes, err := loadNodes(ctx, cfg)
-				if err != nil {
+				if err := refresh(ctx); err != nil {
 					log.Printf("scheduled node update failed: %v", err)
 					continue
 				}
-				store.Replace(nodes)
-				if database != nil {
-					if err := database.ReplaceNodes(ctx, nodes); err != nil {
-						log.Printf("scheduled node cache failed: %v", err)
-					}
-				}
-				log.Printf("scheduled node update loaded %d nodes", len(nodes))
+				log.Printf("scheduled node update completed")
 			}
 		}
 	}()
@@ -491,8 +590,9 @@ func tunnelFactory(cfg config.Config) channel.TunnelFactory {
 }
 
 func demoNodes() []node.Node {
+	now := time.Now()
 	return []node.Node{
-		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Port: 1194, Proto: "udp", LatencyMS: 50, Speed: 1000, Available: true, IPType: "residential", Quality: "normal", PurityScore: 90, Owner: "Demo Home ISP"},
-		{ID: "us-demo", Region: "us", IP: "198.51.100.10", Hostname: "us-demo", Port: 443, Proto: "tcp", LatencyMS: 60, Speed: 900, Available: true, IPType: "hosting", Quality: "datacenter", PurityScore: 45, Owner: "Demo Cloud"},
+		{ID: "jp-demo", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Port: 1194, Proto: "udp", LatencyMS: 50, Speed: 1000, Available: true, LastTestedAt: now, ProbedAt: now, ProbeStatus: "available", ProbeMessage: "demo node", IPType: "residential", Quality: "normal", PurityScore: 90, Owner: "Demo Home ISP"},
+		{ID: "us-demo", Region: "us", IP: "198.51.100.10", Hostname: "us-demo", Port: 443, Proto: "tcp", LatencyMS: 60, Speed: 900, Available: true, LastTestedAt: now, ProbedAt: now, ProbeStatus: "available", ProbeMessage: "demo node", IPType: "hosting", Quality: "datacenter", PurityScore: 45, Owner: "Demo Cloud"},
 	}
 }

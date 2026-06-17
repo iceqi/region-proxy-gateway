@@ -198,11 +198,50 @@ func TestExtractProxiesSkipsValidationFailures(t *testing.T) {
 	}
 }
 
+func TestExtractProxiesSkipsStaleChannelNodes(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{{ID: "jp-stale", Region: "jp", IP: "203.0.113.10", Hostname: "jp-stale", Available: true, LastTestedAt: time.Now().Add(-11 * time.Minute)}})
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{{
+			ID:            "jp-3000",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: config.SelectionAuto,
+			Enabled:       true,
+		}},
+		Nodes: nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return tunnel.NewFake(name)
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Stop(context.Background()) })
+	cfg := config.Default()
+	cfg.NodeRefreshInterval = "10m"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s, want stale node skipped", rec.Code, rec.Body.String())
+	}
+}
+
 func TestExtractProxiesRotateParameterBypassesCacheAndSwitchesNode(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{
-		{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-one", Available: true},
-		{ID: "jp-2", Region: "jp", IP: "203.0.113.11", Hostname: "jp-two", Available: true},
+		{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-one", Available: true, LastTestedAt: time.Now()},
+		{ID: "jp-2", Region: "jp", IP: "203.0.113.11", Hostname: "jp-two", Available: true, LastTestedAt: time.Now()},
 	})
 	manager := channel.NewManager(channel.Config{
 		Channels: []config.Channel{{
@@ -1243,7 +1282,7 @@ func TestDeleteLastChannelPersistsEmptyConfig(t *testing.T) {
 func newAdminTestManager(t *testing.T) (*node.Store, *channel.Manager) {
 	t.Helper()
 	nodes := node.NewStore()
-	nodes.Replace([]node.Node{{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Available: true}})
+	nodes.Replace([]node.Node{{ID: "jp-1", Region: "jp", IP: "203.0.113.10", Hostname: "jp-demo", Available: true, LastTestedAt: time.Now()}})
 	manager := channel.NewManager(channel.Config{
 		Channels: []config.Channel{{
 			ID:            "jp-3000",

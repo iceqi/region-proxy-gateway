@@ -28,6 +28,8 @@ func TestOpenVPNCommandIncludesCoreOptions(t *testing.T) {
 		"--pull-filter", "ignore", "ifconfig-ipv6",
 		"--connect-retry-max", "1",
 		"--connect-timeout", "15",
+		"--ping", "10",
+		"--ping-restart", "60",
 		"--auth-nocache",
 		"--verb", "3",
 	}

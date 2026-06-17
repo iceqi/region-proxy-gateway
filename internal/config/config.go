@@ -60,7 +60,7 @@ func Default() Config {
 		ProxyUsername:        "proxy",
 		ProxyPassword:        "change-me-proxy",
 		ProxyExtractAPIToken: randomToken(32),
-		NodeRefreshInterval:  "20m",
+		NodeRefreshInterval:  "10m",
 		ProxyExtractCacheTTL: "30s",
 		DataDir:              "./data",
 		DatabasePath:         "./data/region-proxy-gateway.db",
@@ -226,7 +226,7 @@ func (c *Config) normalize() {
 		c.TunnelBackend = TunnelBackendFake
 	}
 	if c.NodeRefreshInterval == "" {
-		c.NodeRefreshInterval = "20m"
+		c.NodeRefreshInterval = "10m"
 	}
 	if c.ProxyExtractCacheTTL == "" {
 		c.ProxyExtractCacheTTL = "30s"

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
@@ -31,6 +32,21 @@ func TestLoadNodesFiltersOutUnreachableNodes(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].ID != "ok-1" {
 		t.Fatalf("filtered = %+v, want only ok-1", filtered)
+	}
+}
+
+func TestFreshNodesKeepsOnlyRecentlyValidatedNodes(t *testing.T) {
+	now := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+	nodes := []node.Node{
+		{ID: "fresh", LastTestedAt: now.Add(-9 * time.Minute)},
+		{ID: "stale", LastTestedAt: now.Add(-11 * time.Minute)},
+		{ID: "never"},
+	}
+
+	filtered := freshNodes(nodes, 10*time.Minute, now)
+
+	if len(filtered) != 1 || filtered[0].ID != "fresh" {
+		t.Fatalf("fresh nodes = %+v, want only recently validated node", filtered)
 	}
 }
 

@@ -832,6 +832,9 @@ func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
 		if !snapshot.Enabled || !snapshot.TunnelStatus.Ready {
 			continue
 		}
+		if !s.freshProxyNode(snapshot.CurrentNode) {
+			continue
+		}
 		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
 			continue
 		}
@@ -851,6 +854,20 @@ func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
 		})
 	}
 	return items
+}
+
+func (s *Server) freshProxyNode(n node.Node) bool {
+	if n.ID == "" || n.LastTestedAt.IsZero() {
+		return false
+	}
+	s.configMu.Lock()
+	value := s.config.NodeRefreshInterval
+	s.configMu.Unlock()
+	ttl, err := config.ParseNodeRefreshInterval(value)
+	if err != nil {
+		ttl = 10 * time.Minute
+	}
+	return time.Since(n.LastTestedAt) <= ttl
 }
 
 func (s *Server) validateExtractedProxy(ctx context.Context, item proxyExtractItem) error {

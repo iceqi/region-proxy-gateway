@@ -24,6 +24,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if cfg.DatabasePath != "./data/region-proxy-gateway.db" {
 		t.Fatalf("DatabasePath = %q, want ./data/region-proxy-gateway.db", cfg.DatabasePath)
 	}
+	if cfg.NodeRefreshInterval != "10m" {
+		t.Fatalf("NodeRefreshInterval = %q, want 10m", cfg.NodeRefreshInterval)
+	}
 	if cfg.Channels[0].ListenPort != 3000 {
 		t.Fatalf("default channel port = %d, want 3000", cfg.Channels[0].ListenPort)
 	}
