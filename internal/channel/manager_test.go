@@ -638,6 +638,48 @@ func TestManagerRotateOnDialSwitchesBeforeEachNewDial(t *testing.T) {
 	}
 }
 
+func TestManagerRotateOnDialRecoversBySwitchingCandidateAfterDialFailure(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", IP: "203.0.113.10", Speed: 100, Available: true},
+		{ID: "jp-b", Region: "jp", IP: "203.0.113.11", Speed: 90, Available: true},
+		{ID: "jp-c", Region: "jp", IP: "203.0.113.12", Speed: 80, Available: true},
+	})
+	factory := &recordingFactory{dialErrByNode: map[string]error{"jp-b": fmt.Errorf("node b failed")}}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "rotating-gateway",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionAuto,
+			RotateOnDial:  true,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	conn, err := manager.DialContext(context.Background(), "rotating-gateway", "tcp", "example.com:443")
+	if err != nil {
+		t.Fatalf("DialContext should recover to another node: %v", err)
+	}
+	_ = conn.Close()
+
+	snapshot, _ := manager.Snapshot("rotating-gateway")
+	if snapshot.CurrentNodeID == "jp-b" {
+		t.Fatalf("current node = %q, want recovered away from failed node", snapshot.CurrentNodeID)
+	}
+	if snapshot.LastError != "" {
+		t.Fatalf("last error = %q, want cleared after recovery", snapshot.LastError)
+	}
+}
+
 func TestManagerAutoChannelTriesNextNodeWhenRecoveredNodeStillFails(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{

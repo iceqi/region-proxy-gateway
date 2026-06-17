@@ -444,11 +444,13 @@ func (m *Manager) recoverChannelAfterDialFailure(ctx context.Context, channelID,
 		m.mu.RLock()
 		ch := m.channels[channelID]
 		rotateMinutes := 0
+		rotateOnDial := false
 		if ch != nil {
 			rotateMinutes = ch.cfg.RotateMinutes
+			rotateOnDial = ch.cfg.RotateOnDial
 		}
 		m.mu.RUnlock()
-		if rotateMinutes <= 0 {
+		if rotateMinutes <= 0 && !rotateOnDial {
 			return m.recoverCurrentChannelNode(ctx, channelID, network, address)
 		}
 		return m.recoverAutoChannel(ctx, channelID, network, address)
