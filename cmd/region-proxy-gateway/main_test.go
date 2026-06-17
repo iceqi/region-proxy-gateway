@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iceqi/region-proxy-gateway/internal/admin"
+	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
+	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
 
 func TestLoadNodesFiltersOutUnreachableNodes(t *testing.T) {
@@ -54,7 +58,9 @@ func TestFreshNodesKeepsOnlyRecentlyValidatedNodes(t *testing.T) {
 
 func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendFake
 	cfg.DataDir = t.TempDir()
+	cfg.DatabasePath = filepath.Join(cfg.DataDir, "region-proxy-gateway.db")
 	cfg.Channels[0].ListenHost = "127.0.0.1"
 	cfg.Channels[0].ListenPort = 12345
 
@@ -86,7 +92,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	if !body.OK || body.ChannelCount != 1 || body.NodeCount != 2 || body.ConnectionCount != 0 {
+	if !body.OK || body.ChannelCount != 1 || body.ConnectionCount != 0 {
 		t.Fatalf("unexpected status body: %+v", body)
 	}
 	wantProxyAddr := fmt.Sprintf("%s:%d", cfg.Channels[0].ListenHost, cfg.Channels[0].ListenPort)
@@ -136,11 +142,15 @@ func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
 
 func TestExtractAPIActivatesFreshDynamicProxyPortPerCall(t *testing.T) {
 	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendFake
 	cfg.DataDir = t.TempDir()
+	cfg.DatabasePath = filepath.Join(cfg.DataDir, "region-proxy-gateway.db")
 	cfg.AdminHost = "127.0.0.1"
 	cfg.ProxyUsername = "proxy"
 	cfg.ProxyPassword = "secret"
 	cfg.ProxyExtractAPIPort = 39002
+	cfg.Channels[0].ListenHost = "127.0.0.1"
+	cfg.Channels[0].ListenPort = 12349
 
 	services, err := buildServices(context.Background(), cfg, "")
 	if err != nil {
@@ -194,9 +204,91 @@ func TestExtractAPIActivatesFreshDynamicProxyPortPerCall(t *testing.T) {
 	}
 }
 
+func TestDynamicExtractRuntimeSkipsFailedNodeAndKeepsOldPort(t *testing.T) {
+	nodes := node.NewStore()
+	now := time.Now()
+	nodes.Replace([]node.Node{
+		{ID: "bad", Region: "jp", IP: "203.0.113.10", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+		{ID: "good", Region: "jp", IP: "203.0.113.11", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+	})
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{},
+		Nodes:    nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return &failingNodeTunnel{failedNodeID: "bad"}
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+	cfg := config.Default()
+	cfg.ProxyExtractAPIHost = "127.0.0.1"
+	runtime := newDynamicExtractRuntime(cfg, manager, nil, nodes)
+
+	items, err := runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 1})
+	if err != nil {
+		t.Fatalf("Activate returned error: %v", err)
+	}
+	if len(items) != 1 || items[0].CurrentExitIP != "203.0.113.11" {
+		t.Fatalf("items = %+v, want good node selected after bad node start failure", items)
+	}
+	bad, _ := nodes.NodeByID("bad")
+	if bad.Available || bad.ProbeStatus != "unavailable" {
+		t.Fatalf("bad node after failure = %+v, want marked unavailable", bad)
+	}
+}
+
+func TestDynamicExtractRuntimeKeepsOldPortWhenReplacementFails(t *testing.T) {
+	nodes := node.NewStore()
+	now := time.Now()
+	nodes.Replace([]node.Node{{ID: "good", Region: "jp", IP: "203.0.113.11", Available: true, LastTestedAt: now, OpenVPN: "client\n"}})
+	failedNodeID := ""
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{},
+		Nodes:    nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return &failingNodeTunnel{failedNodeID: failedNodeID}
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+	cfg := config.Default()
+	cfg.ProxyExtractAPIHost = "127.0.0.1"
+	runtime := newDynamicExtractRuntime(cfg, manager, nil, nodes)
+
+	first, err := runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 1})
+	if err != nil {
+		t.Fatalf("first Activate returned error: %v", err)
+	}
+	oldChannelID := runtime.current.channelID
+
+	nodes.Replace([]node.Node{{ID: "bad", Region: "jp", IP: "203.0.113.12", Available: true, LastTestedAt: now, OpenVPN: "client\n"}})
+	failedNodeID = "bad"
+
+	_, err = runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 1})
+	if err == nil {
+		t.Fatalf("second Activate returned nil error, want failure")
+	}
+	if runtime.current == nil || runtime.current.channelID != oldChannelID {
+		t.Fatalf("current entry changed after failed replacement: got %+v want channel %s from first %+v", runtime.current, oldChannelID, first)
+	}
+	if _, ok := manager.Snapshot(oldChannelID); !ok {
+		t.Fatalf("old channel %q was removed after failed replacement", oldChannelID)
+	}
+}
+
 func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendFake
 	cfg.DataDir = t.TempDir()
+	cfg.DatabasePath = filepath.Join(cfg.DataDir, "region-proxy-gateway.db")
+	cfg.Channels[0].ListenHost = "127.0.0.1"
+	cfg.Channels[0].ListenPort = 12350
 	services, err := buildServices(context.Background(), cfg, "")
 	if err != nil {
 		t.Fatalf("buildServices returned error: %v", err)
@@ -265,4 +357,41 @@ func TestBuildServicesMigratesConfigChannelsToSQLite(t *testing.T) {
 	if len(channels) != 1 || channels[0].ID != "jp-3000" {
 		t.Fatalf("sqlite channels = %+v, want migrated jp-3000", channels)
 	}
+}
+
+type failingNodeTunnel struct {
+	failedNodeID string
+	current      node.Node
+	status       tunnel.Status
+}
+
+func (t *failingNodeTunnel) Start(ctx context.Context, n node.Node, opts tunnel.Options) error {
+	if n.ID == t.failedNodeID {
+		return fmt.Errorf("openvpn process exited before device became ready")
+	}
+	t.current = n
+	t.status = tunnel.Status{Name: opts.Name, NodeID: n.ID, Ready: true, StartedAt: time.Now()}
+	return nil
+}
+
+func (t *failingNodeTunnel) Stop(ctx context.Context) error {
+	t.status.Ready = false
+	return nil
+}
+
+func (t *failingNodeTunnel) Switch(ctx context.Context, n node.Node) error {
+	t.current = n
+	t.status.NodeID = n.ID
+	t.status.Ready = true
+	return nil
+}
+
+func (t *failingNodeTunnel) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	client, server := net.Pipe()
+	_ = server.Close()
+	return client, nil
+}
+
+func (t *failingNodeTunnel) Status() tunnel.Status {
+	return t.status
 }

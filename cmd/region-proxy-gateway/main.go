@@ -596,10 +596,26 @@ func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExt
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	node, err := r.selectNode(req.Region)
+	candidates, err := r.selectNodes(req.Region)
 	if err != nil {
 		return nil, err
 	}
+	var lastErr error
+	for _, node := range candidates {
+		items, err := r.activateNode(ctx, req, node)
+		if err == nil {
+			return items, nil
+		}
+		lastErr = err
+		r.markNodeUnavailable(node.ID, err)
+	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("no validated dynamic proxy nodes available: %w", lastErr)
+	}
+	return nil, fmt.Errorf("no validated dynamic proxy nodes available")
+}
+
+func (r *dynamicExtractRuntime) activateNode(ctx context.Context, req admin.ProxyExtractRequest, node node.Node) ([]admin.ProxyExtractItem, error) {
 	channelID := fmt.Sprintf("extract-session-%d", time.Now().UnixNano())
 	channelCfg := config.Channel{
 		ID:            channelID,
@@ -611,6 +627,7 @@ func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExt
 		Enabled:       true,
 	}
 	if err := r.manager.UpsertChannel(ctx, channelCfg); err != nil {
+		r.manager.RemoveChannel(ctx, channelID)
 		return nil, err
 	}
 	port, listener, err := listenDynamicPort(r.bindHost())
@@ -680,9 +697,9 @@ func (r *dynamicExtractRuntime) Stop(ctx context.Context) {
 	r.currentNodeID = ""
 }
 
-func (r *dynamicExtractRuntime) selectNode(region string) (node.Node, error) {
+func (r *dynamicExtractRuntime) selectNodes(region string) ([]node.Node, error) {
 	if r.nodes == nil {
-		return node.Node{}, fmt.Errorf("node store is required")
+		return nil, fmt.Errorf("node store is required")
 	}
 	candidates := r.nodes.List()
 	fresh := make([]node.Node, 0, len(candidates))
@@ -696,16 +713,37 @@ func (r *dynamicExtractRuntime) selectNode(region string) (node.Node, error) {
 		fresh = append(fresh, candidate)
 	}
 	if len(fresh) == 0 {
-		return node.Node{}, fmt.Errorf("no available node for region %q", region)
+		return nil, fmt.Errorf("no available node for region %q", region)
 	}
 	if r.currentNodeID != "" {
+		ordered := make([]node.Node, 0, len(fresh))
 		for _, candidate := range fresh {
 			if candidate.ID != r.currentNodeID {
-				return candidate, nil
+				ordered = append(ordered, candidate)
 			}
 		}
+		for _, candidate := range fresh {
+			if candidate.ID == r.currentNodeID {
+				ordered = append(ordered, candidate)
+			}
+		}
+		return ordered, nil
 	}
-	return fresh[0], nil
+	return fresh, nil
+}
+
+func (r *dynamicExtractRuntime) markNodeUnavailable(nodeID string, err error) {
+	if r.nodes == nil || nodeID == "" || err == nil {
+		return
+	}
+	r.nodes.Update(nodeID, func(n node.Node) node.Node {
+		n.Available = false
+		n.ProbeStatus = "unavailable"
+		n.ProbeMessage = err.Error()
+		n.FailReason = err.Error()
+		n.ProbedAt = time.Now()
+		return n
+	})
 }
 
 func (r *dynamicExtractRuntime) freshNode(n node.Node) bool {
