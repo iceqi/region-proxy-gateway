@@ -335,9 +335,9 @@ const indexHTML = `<!doctype html>
                       <span class="muted">直接作为代理使用</span>
                     </div>
                     <div class="connection-box">
-                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="settings.rotating_gateway_http">{{ settings.rotating_gateway_http || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_http)">复制</a-button></div>
-                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="settings.rotating_gateway_socks5">{{ settings.rotating_gateway_socks5 || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_socks5)">复制</a-button></div>
-                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="settings.rotating_gateway_no_scheme">{{ settings.rotating_gateway_no_scheme || '-' }}</code><a-button size="small" @click="copyText(settings.rotating_gateway_no_scheme)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="publicProxyURL(settings.rotating_gateway_http)">{{ publicProxyURL(settings.rotating_gateway_http) || '-' }}</code><a-button size="small" @click="copyText(publicProxyURL(settings.rotating_gateway_http))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="publicProxyURL(settings.rotating_gateway_socks5)">{{ publicProxyURL(settings.rotating_gateway_socks5) || '-' }}</code><a-button size="small" @click="copyText(publicProxyURL(settings.rotating_gateway_socks5))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="publicProxyNoScheme(settings.rotating_gateway_no_scheme)">{{ publicProxyNoScheme(settings.rotating_gateway_no_scheme) || '-' }}</code><a-button size="small" @click="copyText(publicProxyNoScheme(settings.rotating_gateway_no_scheme))">复制</a-button></div>
                     </div>
                   </div>
                   <div class="gateway-card">
@@ -346,9 +346,9 @@ const indexHTML = `<!doctype html>
                       <span class="muted">提取 API 返回的固定调用出口</span>
                     </div>
                     <div class="connection-box">
-                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="settings.extract_proxy_http">{{ settings.extract_proxy_http || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_http)">复制</a-button></div>
-                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="settings.extract_proxy_socks5">{{ settings.extract_proxy_socks5 || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_socks5)">复制</a-button></div>
-                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="settings.extract_proxy_no_scheme">{{ settings.extract_proxy_no_scheme || '-' }}</code><a-button size="small" @click="copyText(settings.extract_proxy_no_scheme)">复制</a-button></div>
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="publicProxyURL(settings.extract_proxy_http)">{{ publicProxyURL(settings.extract_proxy_http) || '-' }}</code><a-button size="small" @click="copyText(publicProxyURL(settings.extract_proxy_http))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="publicProxyURL(settings.extract_proxy_socks5)">{{ publicProxyURL(settings.extract_proxy_socks5) || '-' }}</code><a-button size="small" @click="copyText(publicProxyURL(settings.extract_proxy_socks5))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="publicProxyNoScheme(settings.extract_proxy_no_scheme)">{{ publicProxyNoScheme(settings.extract_proxy_no_scheme) || '-' }}</code><a-button size="small" @click="copyText(publicProxyNoScheme(settings.extract_proxy_no_scheme))">复制</a-button></div>
                     </div>
                   </div>
                 </div>
@@ -1002,6 +1002,26 @@ const indexHTML = `<!doctype html>
             document.body.removeChild(input);
           }
         },
+        publicProxyURL(value) {
+          if (!value) return '';
+          try {
+            const url = new URL(value);
+            if (this.isLocalListenHost(url.hostname)) {
+              url.hostname = window.location.hostname || url.hostname;
+            }
+            return url.toString();
+          } catch (err) {
+            return value;
+          }
+        },
+        publicProxyNoScheme(value) {
+          if (!value) return '';
+          const parsed = this.publicProxyURL('http://' + value);
+          return parsed.replace(/^http:\/\//, '');
+        },
+        isLocalListenHost(hostname) {
+          return hostname === '0.0.0.0' || hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::';
+        },
         proxyAddress(channel, scheme) {
           const source = scheme === 'socks5'
             ? (channel.proxy_auth_socks5 || channel.proxy_url_socks5 || '')
@@ -1009,7 +1029,7 @@ const indexHTML = `<!doctype html>
           if (!source) return '';
           try {
             const url = new URL(source);
-            if (url.hostname === '0.0.0.0' || url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::') {
+            if (this.isLocalListenHost(url.hostname)) {
               url.hostname = window.location.hostname || url.hostname;
             }
             return url.toString();
@@ -1023,7 +1043,7 @@ const indexHTML = `<!doctype html>
           if (!source) return '';
           try {
             const url = new URL(source);
-            const host = (url.hostname === '0.0.0.0' || url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::')
+            const host = this.isLocalListenHost(url.hostname)
               ? (window.location.hostname || url.hostname)
               : url.hostname;
             const auth = url.username || url.password ? decodeURIComponent(url.username) + ':' + decodeURIComponent(url.password) + '@' : '';

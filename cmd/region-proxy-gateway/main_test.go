@@ -100,6 +100,9 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	if services.proxyRuntime == nil || len(services.proxyRuntime.entries) != 1 || services.proxyRuntime.entries["jp-3000"].server.ListenAddr != wantProxyAddr {
 		t.Fatalf("proxy runtime = %+v, want one proxy at %s", services.proxyRuntime, wantProxyAddr)
 	}
+	if services.gatewayRuntime == nil || len(services.gatewayRuntime.entries) != 1 || services.gatewayRuntime.entries["rotating-gateway"] == nil {
+		t.Fatalf("gateway runtime entries = %+v, want rotating-gateway proxy listener", services.gatewayRuntime.entries)
+	}
 }
 
 func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
