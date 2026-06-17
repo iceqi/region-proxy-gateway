@@ -521,6 +521,43 @@ func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
 	}
 }
 
+func TestSettingsCanGenerateProxyExtractAPIToken(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.ProxyExtractAPIToken = "old-token"
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings/proxy-extract-token", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Settings settingsView `json:"settings"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Settings.ProxyExtractAPIToken == "" || body.Settings.ProxyExtractAPIToken == "old-token" {
+		t.Fatalf("generated token = %q, want new non-empty token", body.Settings.ProxyExtractAPIToken)
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.ProxyExtractAPIToken != body.Settings.ProxyExtractAPIToken {
+		t.Fatalf("persisted token = %q, want %q", loaded.ProxyExtractAPIToken, body.Settings.ProxyExtractAPIToken)
+	}
+}
+
 func TestSettingsCanUpdateAccessAndProxyCredentials(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	cfg := config.Default()

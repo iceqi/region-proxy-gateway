@@ -3,10 +3,12 @@ package admin
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -171,6 +173,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/settings" {
 		s.handleSaveSettings(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/settings/proxy-extract-token" {
+		s.handleGenerateProxyExtractToken(w, r)
 		return
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/system/restart" {
@@ -628,6 +634,21 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		"runtime_reloaded": reloadOK,
 		"runtime_error":    reloadError,
 		"restart_required": false,
+	})
+}
+
+func (s *Server) handleGenerateProxyExtractToken(w http.ResponseWriter, r *http.Request) {
+	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
+		cfg.ProxyExtractAPIToken = randomToken(32)
+		return cfg, nil
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"settings": s.safeSettingsWith(cfg),
+		"token":    cfg.ProxyExtractAPIToken,
 	})
 }
 
@@ -1251,6 +1272,33 @@ func (s *Server) safeSettings() settingsView {
 		AdminPasswordSet:     s.config.AdminPassword != "",
 		ProxyPasswordSet:     s.config.ProxyPassword != "",
 	}
+}
+
+func (s *Server) safeSettingsWith(cfg config.Config) settingsView {
+	return settingsView{
+		NodeRefreshInterval:  cfg.NodeRefreshInterval,
+		ProxyExtractCacheTTL: cfg.ProxyExtractCacheTTL,
+		ProxyExtractAPIToken: cfg.ProxyExtractAPIToken,
+		AdminPath:            cfg.AdminPath,
+		AdminUsername:        cfg.AdminUsername,
+		ProxyUsername:        cfg.ProxyUsername,
+		AdminPasswordSet:     cfg.AdminPassword != "",
+		ProxyPasswordSet:     cfg.ProxyPassword != "",
+	}
+}
+
+func randomToken(length int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	var builder strings.Builder
+	for i := 0; i < length; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			builder.WriteByte('x')
+			continue
+		}
+		builder.WriteByte(alphabet[n.Int64()])
+	}
+	return builder.String()
 }
 
 func (s *Server) applyAuthConfig(cfg config.Config) {

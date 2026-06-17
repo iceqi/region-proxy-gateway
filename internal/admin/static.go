@@ -303,13 +303,14 @@ const indexHTML = `<!doctype html>
                 <div class="settings-item"><a-form-item label="后台新密码"><a-input-password v-model:value="settings.admin_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
                 <div class="settings-item"><a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item></div>
                 <div class="settings-item"><a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
-                <div class="settings-item"><a-form-item label="提取 Token"><a-input v-model:value="settings.proxy_extract_api_token" placeholder="留空不修改"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="提取 Token"><a-input-group compact><a-input v-model:value="settings.proxy_extract_api_token" placeholder="留空不修改" style="width:calc(100% - 160px)"></a-input><a-button @click="generateExtractToken">生成</a-button><a-button @click="copyText(settings.proxy_extract_api_token)">复制</a-button></a-input-group></a-form-item></div>
                 <div class="settings-item"><a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item></div>
                 <div class="settings-item"><a-form-item label="提取缓存 TTL"><a-input v-model:value="settings.proxy_extract_cache_ttl" placeholder="30s"></a-input></a-form-item></div>
               </div>
               <a-alert type="info" show-icon style="margin-bottom: 16px" :message="'API 提取代理：' + extractApiExample"></a-alert>
               <div class="settings-save">
                 <span class="muted">提取 API 需要后台账号密码；支持 format=json|text、scheme=http|socks5|no-scheme、region 和 count 参数。</span>
+                <a-button @click="copyText(extractApiExample)">复制提取 URL</a-button>
                 <a-button type="primary" @click="saveSettings">保存设置</a-button>
               </div>
             </div>
@@ -722,6 +723,15 @@ const indexHTML = `<!doctype html>
             if (body.settings) this.settings = Object.assign({}, this.settings, body.settings, { admin_password: '', proxy_password: '' });
             this.noticeRuntimeResult(body, '设置已保存并热更新');
             await this.load(false);
+          } catch (err) {
+            message.error(err.message);
+          }
+        },
+        async generateExtractToken() {
+          try {
+            const body = await this.request('settings/proxy-extract-token', { method: 'POST' });
+            if (body.settings) this.settings = Object.assign({}, this.settings, body.settings, { admin_password: '', proxy_password: '' });
+            message.success('提取 Token 已生成');
           } catch (err) {
             message.error(err.message);
           }
