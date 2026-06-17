@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -9,6 +11,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -37,6 +41,7 @@ type services struct {
 	storage        *storage.Store
 	proxyRuntime   *proxyRuntime
 	gatewayRuntime *proxyRuntime
+	extractRuntime *dynamicExtractRuntime
 	configPath     string
 }
 
@@ -126,6 +131,9 @@ func main() {
 		}
 		if services.gatewayRuntime != nil {
 			_ = services.gatewayRuntime.Stop(shutdownCtx)
+		}
+		if services.extractRuntime != nil {
+			services.extractRuntime.Stop(shutdownCtx)
 		}
 	}()
 	if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -255,10 +263,12 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		_ = database.Close()
 		return services{}, err
 	}
+	extractRuntime := newDynamicExtractRuntime(cfg, manager, tracker, nodes)
 	reloadRuntime := func(reloadCtx context.Context) error {
 		nextCfg, err := config.Load(cfgPath)
 		if err == nil {
 			proxyRuntime.SetCredentials(nextCfg.ProxyUsername, nextCfg.ProxyPassword)
+			extractRuntime.SetConfig(nextCfg)
 		} else {
 			log.Printf("reload config for proxy credentials failed: %v", err)
 		}
@@ -308,6 +318,9 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 			}),
 			admin.WithRuntimeReloader(reloadRuntime),
 			admin.WithNodeScanStatus(scanState.snapshot),
+			admin.WithProxyExtractActivator(func(ctx context.Context, req admin.ProxyExtractRequest) ([]admin.ProxyExtractItem, error) {
+				return extractRuntime.Activate(ctx, req)
+			}),
 		),
 		nodes:          nodes,
 		channels:       manager,
@@ -315,6 +328,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		storage:        database,
 		proxyRuntime:   proxyRuntime,
 		gatewayRuntime: gatewayRuntime,
+		extractRuntime: extractRuntime,
 		configPath:     cfgPath,
 	}, nil
 }
@@ -322,7 +336,6 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 func gatewayChannels(cfg config.Config) []config.Channel {
 	return []config.Channel{
 		{ID: "rotating-gateway", ListenHost: cfg.RotatingGatewayHost, ListenPort: cfg.RotatingGatewayPort, Region: "*", SelectionMode: config.SelectionAuto, RotateOnDial: true, Enabled: true},
-		{ID: "extract-api-proxy", ListenHost: cfg.ProxyExtractAPIHost, ListenPort: cfg.ProxyExtractAPIPort, Region: "*", SelectionMode: config.SelectionAuto, RotateOnDial: true, Enabled: true},
 	}
 }
 
@@ -550,6 +563,255 @@ type proxyRuntimeEntry struct {
 	channel  config.Channel
 	server   *proxy.Server
 	listener net.Listener
+}
+
+type dynamicExtractRuntime struct {
+	mu             sync.Mutex
+	cfg            config.Config
+	manager        *channel.Manager
+	nodes          *node.Store
+	tracker        *connection.Tracker
+	validateTarget string
+	current        *dynamicExtractEntry
+	currentNodeID  string
+}
+
+type dynamicExtractEntry struct {
+	channelID string
+	listener  net.Listener
+	server    *proxy.Server
+	port      int
+	node      node.Node
+}
+
+func newDynamicExtractRuntime(cfg config.Config, manager *channel.Manager, tracker *connection.Tracker, nodes *node.Store) *dynamicExtractRuntime {
+	validateTarget := "1.1.1.1:443"
+	if cfg.TunnelBackend == config.TunnelBackendFake {
+		validateTarget = ""
+	}
+	return &dynamicExtractRuntime{cfg: cfg, manager: manager, tracker: tracker, nodes: nodes, validateTarget: validateTarget}
+}
+
+func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExtractRequest) ([]admin.ProxyExtractItem, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	node, err := r.selectNode(req.Region)
+	if err != nil {
+		return nil, err
+	}
+	channelID := fmt.Sprintf("extract-session-%d", time.Now().UnixNano())
+	channelCfg := config.Channel{
+		ID:            channelID,
+		ListenHost:    r.bindHost(),
+		ListenPort:    0,
+		Region:        node.Region,
+		SelectionMode: config.SelectionManual,
+		ManualNodeID:  node.ID,
+		Enabled:       true,
+	}
+	if err := r.manager.UpsertChannel(ctx, channelCfg); err != nil {
+		return nil, err
+	}
+	port, listener, err := listenDynamicPort(r.bindHost())
+	if err != nil {
+		r.manager.RemoveChannel(ctx, channelID)
+		return nil, err
+	}
+	entry := &dynamicExtractEntry{
+		channelID: channelID,
+		listener:  listener,
+		server:    proxy.NewServer(listener.Addr().String(), channelID, r.cfg.ProxyUsername, r.cfg.ProxyPassword, r.manager, r.tracker),
+		port:      port,
+		node:      node,
+	}
+	go func() {
+		if err := entry.server.Serve(entry.listener); err != nil {
+			log.Printf("dynamic extract proxy stopped: %v", err)
+		}
+	}()
+	if err := validateDynamicExtractProxy(ctx, r.bindHost(), port, r.cfg.ProxyUsername, r.cfg.ProxyPassword, r.validateTarget); err != nil {
+		_ = entry.listener.Close()
+		r.manager.RemoveChannel(ctx, channelID)
+		return nil, err
+	}
+	old := r.current
+	r.current = entry
+	r.currentNodeID = node.ID
+	if old != nil {
+		_ = old.listener.Close()
+		r.manager.RemoveChannel(ctx, old.channelID)
+	}
+	publicHost := extractPublicHost(req.Host, r.cfg.ProxyExtractAPIHost)
+	return []admin.ProxyExtractItem{{
+		ChannelID:     channelID,
+		Region:        node.Region,
+		CurrentExitIP: dynamicNodeExitIP(node),
+		HTTP:          "http://" + proxyAuthHost(r.cfg.ProxyUsername, r.cfg.ProxyPassword, publicHost, port),
+		SOCKS5:        "socks5://" + proxyAuthHost(r.cfg.ProxyUsername, r.cfg.ProxyPassword, publicHost, port),
+		NoScheme:      proxyAuthHost(r.cfg.ProxyUsername, r.cfg.ProxyPassword, publicHost, port),
+		ValidatedAt:   time.Now().Format(time.RFC3339),
+	}}, nil
+}
+
+func (r *dynamicExtractRuntime) SetConfig(cfg config.Config) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg
+	if cfg.TunnelBackend == config.TunnelBackendFake {
+		r.validateTarget = ""
+	} else {
+		r.validateTarget = "1.1.1.1:443"
+	}
+	if r.current != nil {
+		r.current.server.SetCredentials(cfg.ProxyUsername, cfg.ProxyPassword)
+	}
+}
+
+func (r *dynamicExtractRuntime) Stop(ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.current == nil {
+		return
+	}
+	_ = r.current.listener.Close()
+	r.manager.RemoveChannel(ctx, r.current.channelID)
+	r.current = nil
+	r.currentNodeID = ""
+}
+
+func (r *dynamicExtractRuntime) selectNode(region string) (node.Node, error) {
+	if r.nodes == nil {
+		return node.Node{}, fmt.Errorf("node store is required")
+	}
+	candidates := r.nodes.List()
+	fresh := make([]node.Node, 0, len(candidates))
+	for _, candidate := range candidates {
+		if region != "" && region != "*" && candidate.Region != strings.ToLower(strings.TrimSpace(region)) {
+			continue
+		}
+		if !candidate.Available || candidate.ID == "" || !r.freshNode(candidate) {
+			continue
+		}
+		fresh = append(fresh, candidate)
+	}
+	if len(fresh) == 0 {
+		return node.Node{}, fmt.Errorf("no available node for region %q", region)
+	}
+	if r.currentNodeID != "" {
+		for _, candidate := range fresh {
+			if candidate.ID != r.currentNodeID {
+				return candidate, nil
+			}
+		}
+	}
+	return fresh[0], nil
+}
+
+func (r *dynamicExtractRuntime) freshNode(n node.Node) bool {
+	if n.LastTestedAt.IsZero() {
+		return false
+	}
+	ttl, err := config.ParseNodeRefreshInterval(r.cfg.NodeRefreshInterval)
+	if err != nil {
+		ttl = 10 * time.Minute
+	}
+	return time.Since(n.LastTestedAt) <= ttl
+}
+
+func (r *dynamicExtractRuntime) bindHost() string {
+	host := strings.TrimSpace(r.cfg.ProxyExtractAPIHost)
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return host
+}
+
+func listenDynamicPort(host string) (int, net.Listener, error) {
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		return 0, nil, err
+	}
+	tcpAddr, _ := listener.Addr().(*net.TCPAddr)
+	if tcpAddr == nil {
+		_ = listener.Close()
+		return 0, nil, fmt.Errorf("unexpected listener address %T", listener.Addr())
+	}
+	return tcpAddr.Port, listener, nil
+}
+
+func validateDynamicExtractProxy(ctx context.Context, host string, port int, username, password string, target string) error {
+	var targetListener net.Listener
+	var targetDone chan struct{}
+	if target == "" {
+		var err error
+		targetListener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		defer targetListener.Close()
+		target = targetListener.Addr().String()
+		targetDone = make(chan struct{})
+		go func() {
+			defer close(targetDone)
+			conn, err := targetListener.Accept()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}()
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(proxyValidationHost(host), strconv.Itoa(port)), 8*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\nProxy-Authorization: Basic %s\r\n\r\n", target, target, auth); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(line, " 200 ") {
+		return fmt.Errorf("proxy validation returned %s", strings.TrimSpace(line))
+	}
+	if targetListener != nil {
+		_ = targetListener.Close()
+		<-targetDone
+	}
+	return nil
+}
+
+func proxyValidationHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func extractPublicHost(requestHost string, configuredHost string) string {
+	requestHost = strings.TrimSpace(requestHost)
+	if requestHost != "" {
+		return requestHost
+	}
+	configuredHost = strings.TrimSpace(configuredHost)
+	if configuredHost == "" || configuredHost == "0.0.0.0" || configuredHost == "::" {
+		return "127.0.0.1"
+	}
+	return configuredHost
+}
+
+func proxyAuthHost(username, password, host string, port int) string {
+	return fmt.Sprintf("%s:%s@%s:%d", username, password, host, port)
+}
+
+func dynamicNodeExitIP(n node.Node) string {
+	if n.IP != "" {
+		return n.IP
+	}
+	return n.Hostname
 }
 
 func newProxyRuntime(proxyUsername string, proxyPassword string, dialer proxy.Dialer, tracker *connection.Tracker) *proxyRuntime {

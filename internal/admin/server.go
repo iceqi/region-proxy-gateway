@@ -41,6 +41,7 @@ type Server struct {
 	proxyExtract          proxyExtractCache
 	proxyExtractCursor    map[string]int
 	proxyExtractValidator proxyExtractValidator
+	proxyExtractActivator ProxyExtractActivator
 	storage               *storage.Store
 	adminPath             string
 	adminUser             string
@@ -50,6 +51,16 @@ type Server struct {
 type Option func(*Server)
 
 type proxyExtractValidator func(context.Context, proxyExtractItem) error
+type ProxyExtractActivator func(context.Context, ProxyExtractRequest) ([]ProxyExtractItem, error)
+type ProxyExtractItem = proxyExtractItem
+
+type ProxyExtractRequest struct {
+	Region string
+	Scheme string
+	Count  int
+	Host   string
+	Rotate bool
+}
 
 func WithConfig(path string, cfg config.Config) Option {
 	return func(s *Server) {
@@ -113,6 +124,12 @@ func WithNodeScanStatus(status func() map[string]any) Option {
 func WithProxyExtractorValidator(validator proxyExtractValidator) Option {
 	return func(s *Server) {
 		s.proxyExtractValidator = validator
+	}
+}
+
+func WithProxyExtractActivator(activator ProxyExtractActivator) Option {
+	return func(s *Server) {
+		s.proxyExtractActivator = activator
 	}
 }
 
@@ -763,6 +780,16 @@ func (r proxyExtractRequest) cacheKey() string {
 }
 
 func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([]proxyExtractItem, bool, error) {
+	if s.proxyExtractActivator != nil {
+		items, err := s.proxyExtractActivator(ctx, ProxyExtractRequest{
+			Region: req.region,
+			Scheme: req.scheme,
+			Count:  req.count,
+			Host:   req.host,
+			Rotate: req.rotate,
+		})
+		return items, false, err
+	}
 	ttl := s.proxyExtractCacheTTL()
 	key := req.cacheKey()
 	now := time.Now()
@@ -1214,7 +1241,7 @@ func (s *Server) runtimeChannelList() []channel.Snapshot {
 }
 
 func isSystemProxyChannel(id string) bool {
-	return id == "rotating-gateway" || id == "extract-api-proxy"
+	return id == "rotating-gateway" || id == "extract-api-proxy" || strings.HasPrefix(id, "extract-session-")
 }
 
 type channelView struct {

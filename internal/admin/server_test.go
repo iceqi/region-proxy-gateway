@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -386,6 +388,64 @@ func TestExtractProxiesRotateParameterBypassesCacheAndSwitchesNode(t *testing.T)
 	}
 	if exits[0] == exits[1] {
 		t.Fatalf("exit IPs = %+v, want rotate parameter to switch node", exits)
+	}
+}
+
+func TestExtractProxiesUsesActivatorForFreshPortEachCall(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	cfg.ProxyExtractCacheTTL = "30s"
+	cfg.ProxyExtractAPIPort = 39002
+	ports := []int{45101, 45102}
+	calls := 0
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractActivator(func(ctx context.Context, req ProxyExtractRequest) ([]ProxyExtractItem, error) {
+		port := ports[calls]
+		calls++
+		return []proxyExtractItem{{
+			ChannelID:     "extract-api-proxy-dynamic",
+			Region:        "jp",
+			CurrentExitIP: "203.0.113.10",
+			HTTP:          "http://proxy+jp:secret@203.0.113.99:" + strconv.Itoa(port),
+			SOCKS5:        "socks5://proxy+jp:secret@203.0.113.99:" + strconv.Itoa(port),
+			NoScheme:      "proxy+jp:secret@203.0.113.99:" + strconv.Itoa(port),
+		}}, nil
+	}))
+
+	var returnedPorts []string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1", nil)
+		req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+		rec := httptest.NewRecorder()
+
+		server.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Proxies []proxyExtractItem `json:"proxies"`
+			Cached  bool               `json:"cached"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request %d: %v", i+1, err)
+		}
+		if body.Cached {
+			t.Fatalf("request %d cached = true, want dynamic activator results uncached", i+1)
+		}
+		parsed, err := url.Parse(body.Proxies[0].HTTP)
+		if err != nil {
+			t.Fatalf("parse proxy url %q: %v", body.Proxies[0].HTTP, err)
+		}
+		returnedPorts = append(returnedPorts, parsed.Port())
+	}
+
+	if calls != 2 {
+		t.Fatalf("activator calls = %d, want one per API call", calls)
+	}
+	if returnedPorts[0] == returnedPorts[1] || returnedPorts[0] == strconv.Itoa(cfg.ProxyExtractAPIPort) || returnedPorts[1] == strconv.Itoa(cfg.ProxyExtractAPIPort) {
+		t.Fatalf("returned ports = %+v, want fresh dynamic ports not fixed config port %d", returnedPorts, cfg.ProxyExtractAPIPort)
 	}
 }
 

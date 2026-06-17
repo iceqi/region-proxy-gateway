@@ -204,6 +204,35 @@ func (m *Manager) ReplaceChannels(ctx context.Context, channels []config.Channel
 	return nil
 }
 
+func (m *Manager) UpsertChannel(ctx context.Context, ch config.Channel) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if current, ok := m.channels[ch.ID]; ok {
+		if !current.cfg.Enabled || current.tunnel == nil || channelRuntimeNeedsRestart(current.cfg, ch) {
+			if current.tunnel != nil {
+				_ = current.tunnel.Stop(ctx)
+			}
+			delete(m.channels, ch.ID)
+		} else {
+			current.cfg = ch
+			return nil
+		}
+	}
+	return m.startRuntimeChannelLocked(ctx, ch, m.deviceNameForIndex(len(m.channels)))
+}
+
+func (m *Manager) RemoveChannel(ctx context.Context, channelID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if current, ok := m.channels[channelID]; ok {
+		if current.tunnel != nil {
+			_ = current.tunnel.Stop(ctx)
+		}
+		delete(m.channels, channelID)
+	}
+}
+
 func (m *Manager) RotateNow(ctx context.Context, channelID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -562,6 +591,10 @@ func (m *Manager) clearError(channelID string) {
 }
 
 func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel) error {
+	return m.startRuntimeChannelLocked(ctx, ch, m.deviceNameForIndex(index))
+}
+
+func (m *Manager) startRuntimeChannelLocked(ctx context.Context, ch config.Channel, deviceName string) error {
 	n, err := m.selectNode(ctx, ch)
 	if err != nil {
 		m.channels[ch.ID] = &runtimeChannel{cfg: ch, err: err.Error()}
@@ -575,7 +608,7 @@ func (m *Manager) startLocked(ctx context.Context, index int, ch config.Channel)
 		Name:       ch.ID,
 		DataDir:    m.cfg.DataDir,
 		Command:    m.cfg.OpenVPNCmd,
-		DeviceName: m.deviceNameForIndex(index),
+		DeviceName: deviceName,
 	}
 	if err := tun.Start(ctx, n, opts); err != nil {
 		m.channels[ch.ID] = &runtimeChannel{cfg: ch, tunnel: tun, currentNode: n, err: err.Error()}

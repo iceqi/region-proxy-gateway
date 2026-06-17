@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +65,7 @@ func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
 	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/status", nil)
@@ -111,6 +114,7 @@ func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
 	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
 	defer services.storage.Close()
 
 	req := httptest.NewRequest(http.MethodPost, cfg.AdminPath+"/api/channels", strings.NewReader(`{"id":"us-3001","listen_host":"127.0.0.1","listen_port":12348,"region":"us","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
@@ -130,6 +134,66 @@ func TestAdminChannelSaveHotReloadsProxyRuntime(t *testing.T) {
 	}
 }
 
+func TestExtractAPIActivatesFreshDynamicProxyPortPerCall(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.AdminHost = "127.0.0.1"
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	cfg.ProxyExtractAPIPort = 39002
+
+	services, err := buildServices(context.Background(), cfg, "")
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
+	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
+	defer services.storage.Close()
+
+	var ports []string
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/proxies/extract?format=json&count=1", nil)
+		req.Host = "203.0.113.99:8787"
+		req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+		rec := httptest.NewRecorder()
+
+		services.admin.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Proxies []struct {
+				HTTP string `json:"http"`
+			} `json:"proxies"`
+			Cached bool `json:"cached"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request %d: %v", i+1, err)
+		}
+		if body.Cached {
+			t.Fatalf("request %d cached = true, want dynamic extraction uncached", i+1)
+		}
+		if len(body.Proxies) != 1 {
+			t.Fatalf("request %d proxies = %+v, want one", i+1, body.Proxies)
+		}
+		parsed, err := url.Parse(body.Proxies[0].HTTP)
+		if err != nil {
+			t.Fatalf("parse request %d url %q: %v", i+1, body.Proxies[0].HTTP, err)
+		}
+		ports = append(ports, parsed.Port())
+	}
+
+	if ports[0] == "" || ports[1] == "" || ports[0] == ports[1] {
+		t.Fatalf("ports = %+v, want two different dynamic ports", ports)
+	}
+	if ports[0] == strconv.Itoa(cfg.ProxyExtractAPIPort) || ports[1] == strconv.Itoa(cfg.ProxyExtractAPIPort) {
+		t.Fatalf("ports = %+v, should not use fixed extract api port %d", ports, cfg.ProxyExtractAPIPort)
+	}
+}
+
 func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
@@ -140,6 +204,7 @@ func TestBuildServicesSharesTrackerBetweenAdminAndProxy(t *testing.T) {
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
 	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
 
 	services.tracker.Start("127.0.0.1:50000", "http", "jp-3000", "example.com:443")
 
@@ -183,6 +248,7 @@ func TestBuildServicesMigratesConfigChannelsToSQLite(t *testing.T) {
 	defer services.channels.Stop(context.Background())
 	defer services.proxyRuntime.Stop(context.Background())
 	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
 	defer services.storage.Close()
 
 	loaded, err := config.Load(cfgPath)
