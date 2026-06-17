@@ -17,6 +17,7 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/admin"
 	"github.com/iceqi/region-proxy-gateway/internal/channel"
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/connection"
 	"github.com/iceqi/region-proxy-gateway/internal/node"
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
@@ -204,6 +205,69 @@ func TestExtractAPIActivatesFreshDynamicProxyPortPerCall(t *testing.T) {
 	}
 }
 
+func TestExtractAPIActivatesMultipleDynamicProxyPortsPerCall(t *testing.T) {
+	cfg := config.Default()
+	cfg.TunnelBackend = config.TunnelBackendFake
+	cfg.DataDir = t.TempDir()
+	cfg.DatabasePath = filepath.Join(cfg.DataDir, "region-proxy-gateway.db")
+	cfg.AdminHost = "127.0.0.1"
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	cfg.ProxyExtractAPIPort = 39003
+	cfg.Channels[0].ListenHost = "127.0.0.1"
+	cfg.Channels[0].ListenPort = 12351
+
+	services, err := buildServices(context.Background(), cfg, "")
+	if err != nil {
+		t.Fatalf("buildServices returned error: %v", err)
+	}
+	defer services.channels.Stop(context.Background())
+	defer services.proxyRuntime.Stop(context.Background())
+	defer services.gatewayRuntime.Stop(context.Background())
+	defer services.extractRuntime.Stop(context.Background())
+	defer services.storage.Close()
+
+	req := httptest.NewRequest(http.MethodGet, cfg.AdminPath+"/api/proxies/extract?format=json&count=2", nil)
+	req.Host = "203.0.113.99:8787"
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	services.admin.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Proxies []struct {
+			ChannelID string `json:"channel_id"`
+			HTTP      string `json:"http"`
+		} `json:"proxies"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Proxies) != 2 {
+		t.Fatalf("proxies = %+v, want two dynamic proxies", body.Proxies)
+	}
+	ports := map[string]struct{}{}
+	for _, item := range body.Proxies {
+		parsed, err := url.Parse(item.HTTP)
+		if err != nil {
+			t.Fatalf("parse url %q: %v", item.HTTP, err)
+		}
+		if parsed.Port() == "" {
+			t.Fatalf("url %q has no port", item.HTTP)
+		}
+		ports[parsed.Port()] = struct{}{}
+		if _, ok := services.channels.Snapshot(item.ChannelID); !ok {
+			t.Fatalf("channel %q not visible in manager", item.ChannelID)
+		}
+	}
+	if len(ports) != 2 {
+		t.Fatalf("ports = %+v, want unique ports", ports)
+	}
+}
+
 func TestDynamicExtractRuntimeSkipsFailedNodeAndKeepsOldPort(t *testing.T) {
 	nodes := node.NewStore()
 	now := time.Now()
@@ -279,6 +343,65 @@ func TestDynamicExtractRuntimeKeepsOldPortWhenReplacementFails(t *testing.T) {
 	}
 	if _, ok := manager.Snapshot(oldChannelID); !ok {
 		t.Fatalf("old channel %q was removed after failed replacement", oldChannelID)
+	}
+}
+
+func TestDynamicExtractRuntimeKeepsMultipleSessionsUntilIdle(t *testing.T) {
+	nodes := node.NewStore()
+	now := time.Now()
+	nodes.Replace([]node.Node{
+		{ID: "jp-1", Region: "jp", IP: "203.0.113.11", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+		{ID: "jp-2", Region: "jp", IP: "203.0.113.12", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+	})
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{},
+		Nodes:    nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return &failingNodeTunnel{}
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+	tracker := connection.NewTracker()
+	cfg := config.Default()
+	cfg.ProxyExtractAPIHost = "127.0.0.1"
+	runtime := newDynamicExtractRuntime(cfg, manager, tracker, nodes)
+	runtime.idleTTL = time.Minute
+
+	first, err := runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 1})
+	if err != nil {
+		t.Fatalf("first Activate: %v", err)
+	}
+	second, err := runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 1})
+	if err != nil {
+		t.Fatalf("second Activate: %v", err)
+	}
+	if len(runtime.sessions) != 2 {
+		t.Fatalf("sessions = %d, want two concurrent extract sessions", len(runtime.sessions))
+	}
+	if first[0].ChannelID == second[0].ChannelID || first[0].HTTP == second[0].HTTP {
+		t.Fatalf("extract sessions should be independent: first=%+v second=%+v", first, second)
+	}
+
+	for _, session := range runtime.sessions {
+		session.lastUsedAt = time.Now().Add(-2 * time.Minute)
+	}
+	activeConn := tracker.Start("client", "http", first[0].ChannelID, "example.com:443")
+	runtime.cleanupIdleSessions(context.Background())
+
+	if _, ok := manager.Snapshot(first[0].ChannelID); !ok {
+		t.Fatalf("active session %q should not be released", first[0].ChannelID)
+	}
+	if _, ok := manager.Snapshot(second[0].ChannelID); ok {
+		t.Fatalf("idle session %q should be released", second[0].ChannelID)
+	}
+	tracker.Finish(activeConn)
+	runtime.cleanupIdleSessions(context.Background())
+	if _, ok := manager.Snapshot(first[0].ChannelID); ok {
+		t.Fatalf("inactive idle session %q should be released", first[0].ChannelID)
 	}
 }
 

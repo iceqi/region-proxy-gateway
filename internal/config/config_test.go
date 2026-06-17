@@ -27,6 +27,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	if cfg.NodeRefreshInterval != "10m" {
 		t.Fatalf("NodeRefreshInterval = %q, want 10m", cfg.NodeRefreshInterval)
 	}
+	if cfg.ProxyExtractIdleTTL != "10m" {
+		t.Fatalf("ProxyExtractIdleTTL = %q, want 10m", cfg.ProxyExtractIdleTTL)
+	}
 	if cfg.Channels[0].ListenPort != 3000 {
 		t.Fatalf("default channel port = %d, want 3000", cfg.Channels[0].ListenPort)
 	}

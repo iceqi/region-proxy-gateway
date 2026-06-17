@@ -725,7 +725,7 @@ func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
 	}
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"20m","proxy_extract_cache_ttl":"45s","proxy_extract_api_token":"new-token"}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"20m","proxy_extract_cache_ttl":"45s","proxy_extract_idle_ttl":"3m","proxy_extract_api_token":"new-token"}`))
 	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
@@ -740,6 +740,9 @@ func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
 	}
 	if loaded.ProxyExtractCacheTTL != "45s" {
 		t.Fatalf("proxy extract cache ttl = %q, want 45s", loaded.ProxyExtractCacheTTL)
+	}
+	if loaded.ProxyExtractIdleTTL != "3m" {
+		t.Fatalf("proxy extract idle ttl = %q, want 3m", loaded.ProxyExtractIdleTTL)
 	}
 	if loaded.ProxyExtractAPIToken != "new-token" {
 		t.Fatalf("proxy extract api token = %q, want new-token", loaded.ProxyExtractAPIToken)

@@ -35,6 +35,7 @@ type Config struct {
 	ProxyExtractAPIToken string    `json:"proxy_extract_api_token"`
 	NodeRefreshInterval  string    `json:"node_refresh_interval"`
 	ProxyExtractCacheTTL string    `json:"proxy_extract_cache_ttl"`
+	ProxyExtractIdleTTL  string    `json:"proxy_extract_idle_ttl"`
 	DataDir              string    `json:"data_dir"`
 	DatabasePath         string    `json:"database_path"`
 	OpenVPNCommand       string    `json:"openvpn_command"`
@@ -70,6 +71,7 @@ func Default() Config {
 		ProxyExtractAPIToken: randomToken(32),
 		NodeRefreshInterval:  "10m",
 		ProxyExtractCacheTTL: "30s",
+		ProxyExtractIdleTTL:  "10m",
 		DataDir:              "./data",
 		DatabasePath:         "./data/region-proxy-gateway.db",
 		OpenVPNCommand:       "openvpn",
@@ -256,6 +258,9 @@ func (c *Config) normalize() {
 	if c.ProxyExtractCacheTTL == "" {
 		c.ProxyExtractCacheTTL = "30s"
 	}
+	if c.ProxyExtractIdleTTL == "" {
+		c.ProxyExtractIdleTTL = "10m"
+	}
 	if strings.TrimSpace(c.ProxyExtractAPIToken) == "" {
 		c.ProxyExtractAPIToken = randomToken(32)
 	}
@@ -313,6 +318,9 @@ func (c Config) Validate() error {
 	if _, err := ParseProxyExtractCacheTTL(c.ProxyExtractCacheTTL); err != nil {
 		return err
 	}
+	if _, err := ParseProxyExtractIdleTTL(c.ProxyExtractIdleTTL); err != nil {
+		return err
+	}
 	ports := map[int]string{c.AdminPort: "admin", c.RotatingGatewayPort: "rotating_gateway", c.ProxyExtractAPIPort: "proxy_extract_api"}
 	if c.RotatingGatewayPort == c.ProxyExtractAPIPort {
 		return fmt.Errorf("port %d is used by both rotating_gateway and proxy_extract_api", c.RotatingGatewayPort)
@@ -360,6 +368,21 @@ func ParseProxyExtractCacheTTL(value string) (time.Duration, error) {
 	}
 	if duration < 0 {
 		return 0, fmt.Errorf("proxy extract cache ttl must be >= 0")
+	}
+	return duration, nil
+}
+
+func ParseProxyExtractIdleTTL(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "10m"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("proxy extract idle ttl is invalid: %w", err)
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("proxy extract idle ttl must be > 0")
 	}
 	return duration, nil
 }

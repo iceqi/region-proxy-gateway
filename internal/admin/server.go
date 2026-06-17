@@ -613,6 +613,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		NodeRefreshInterval  string `json:"node_refresh_interval"`
 		ProxyExtractCacheTTL string `json:"proxy_extract_cache_ttl"`
+		ProxyExtractIdleTTL  string `json:"proxy_extract_idle_ttl"`
 		AdminPath            string `json:"admin_path"`
 		AdminUsername        string `json:"admin_username"`
 		AdminPassword        string `json:"admin_password"`
@@ -633,6 +634,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		cfg.NodeRefreshInterval = interval
 		if strings.TrimSpace(body.ProxyExtractCacheTTL) != "" {
 			cfg.ProxyExtractCacheTTL = strings.TrimSpace(body.ProxyExtractCacheTTL)
+		}
+		if strings.TrimSpace(body.ProxyExtractIdleTTL) != "" {
+			cfg.ProxyExtractIdleTTL = strings.TrimSpace(body.ProxyExtractIdleTTL)
 		}
 		if strings.TrimSpace(body.AdminPath) != "" {
 			adminPath, err := normalizeEditableAdminPath(body.AdminPath)
@@ -660,6 +664,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 			return cfg, err
 		}
 		if _, err := config.ParseProxyExtractCacheTTL(cfg.ProxyExtractCacheTTL); err != nil {
+			return cfg, err
+		}
+		if _, err := config.ParseProxyExtractIdleTTL(cfg.ProxyExtractIdleTTL); err != nil {
 			return cfg, err
 		}
 		if err := cfg.Validate(); err != nil {
@@ -1583,6 +1590,7 @@ func compactNode(n node.Node) nodeView {
 type settingsView struct {
 	NodeRefreshInterval     string `json:"node_refresh_interval"`
 	ProxyExtractCacheTTL    string `json:"proxy_extract_cache_ttl"`
+	ProxyExtractIdleTTL     string `json:"proxy_extract_idle_ttl"`
 	ProxyExtractAPIToken    string `json:"proxy_extract_api_token"`
 	RotatingGatewayHost     string `json:"rotating_gateway_host"`
 	RotatingGatewayPort     int    `json:"rotating_gateway_port"`
@@ -1607,6 +1615,7 @@ func (s *Server) safeSettings() settingsView {
 	view := settingsView{
 		NodeRefreshInterval:  s.config.NodeRefreshInterval,
 		ProxyExtractCacheTTL: s.config.ProxyExtractCacheTTL,
+		ProxyExtractIdleTTL:  s.config.ProxyExtractIdleTTL,
 		ProxyExtractAPIToken: s.config.ProxyExtractAPIToken,
 		RotatingGatewayHost:  s.config.RotatingGatewayHost,
 		RotatingGatewayPort:  s.config.RotatingGatewayPort,
@@ -1640,6 +1649,7 @@ func (s *Server) safeSettingsWith(cfg config.Config) settingsView {
 	view := settingsView{
 		NodeRefreshInterval:  cfg.NodeRefreshInterval,
 		ProxyExtractCacheTTL: cfg.ProxyExtractCacheTTL,
+		ProxyExtractIdleTTL:  cfg.ProxyExtractIdleTTL,
 		ProxyExtractAPIToken: cfg.ProxyExtractAPIToken,
 		RotatingGatewayHost:  cfg.RotatingGatewayHost,
 		RotatingGatewayPort:  cfg.RotatingGatewayPort,

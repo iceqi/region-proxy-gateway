@@ -264,6 +264,7 @@ func buildServices(ctx context.Context, cfg config.Config, cfgPath string) (serv
 		return services{}, err
 	}
 	extractRuntime := newDynamicExtractRuntime(cfg, manager, tracker, nodes)
+	go extractRuntime.RunCleanup(ctx)
 	reloadRuntime := func(reloadCtx context.Context) error {
 		nextCfg, err := config.Load(cfgPath)
 		if err == nil {
@@ -573,15 +574,20 @@ type dynamicExtractRuntime struct {
 	tracker        *connection.Tracker
 	validateTarget string
 	current        *dynamicExtractEntry
+	sessions       map[string]*dynamicExtractEntry
+	idleTTL        time.Duration
 	currentNodeID  string
 }
 
 type dynamicExtractEntry struct {
-	channelID string
-	listener  net.Listener
-	server    *proxy.Server
-	port      int
-	node      node.Node
+	channelID  string
+	listener   net.Listener
+	server     *proxy.Server
+	port       int
+	node       node.Node
+	createdAt  time.Time
+	readyAt    time.Time
+	lastUsedAt time.Time
 }
 
 func newDynamicExtractRuntime(cfg config.Config, manager *channel.Manager, tracker *connection.Tracker, nodes *node.Store) *dynamicExtractRuntime {
@@ -589,25 +595,56 @@ func newDynamicExtractRuntime(cfg config.Config, manager *channel.Manager, track
 	if cfg.TunnelBackend == config.TunnelBackendFake {
 		validateTarget = ""
 	}
-	return &dynamicExtractRuntime{cfg: cfg, manager: manager, tracker: tracker, nodes: nodes, validateTarget: validateTarget}
+	idleTTL, err := config.ParseProxyExtractIdleTTL(cfg.ProxyExtractIdleTTL)
+	if err != nil {
+		idleTTL = 10 * time.Minute
+	}
+	return &dynamicExtractRuntime{cfg: cfg, manager: manager, tracker: tracker, nodes: nodes, validateTarget: validateTarget, sessions: map[string]*dynamicExtractEntry{}, idleTTL: idleTTL}
 }
 
 func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExtractRequest) ([]admin.ProxyExtractItem, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	candidates, err := r.selectNodes(req.Region)
-	if err != nil {
-		return nil, err
+	count := req.Count
+	if count < 1 {
+		count = 1
 	}
+	items := make([]admin.ProxyExtractItem, 0, count)
+	selected := map[string]struct{}{}
 	var lastErr error
-	for _, node := range candidates {
-		items, err := r.activateNode(ctx, req, node)
-		if err == nil {
-			return items, nil
+	for len(items) < count {
+		candidates, err := r.selectNodes(req.Region)
+		if err != nil {
+			if len(items) > 0 {
+				return items, nil
+			}
+			return nil, err
 		}
-		lastErr = err
-		r.markNodeUnavailable(node.ID, err)
+		progressed := false
+		for _, node := range candidates {
+			if _, ok := selected[node.ID]; ok {
+				continue
+			}
+			activated, err := r.activateNode(ctx, req, node)
+			if err == nil {
+				items = append(items, activated...)
+				selected[node.ID] = struct{}{}
+				progressed = true
+				if len(items) >= count {
+					return items, nil
+				}
+				continue
+			}
+			lastErr = err
+			r.markNodeUnavailable(node.ID, err)
+		}
+		if !progressed {
+			break
+		}
+	}
+	if len(items) > 0 {
+		return items, nil
 	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("no validated dynamic proxy nodes available: %w", lastErr)
@@ -617,30 +654,33 @@ func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExt
 
 func (r *dynamicExtractRuntime) activateNode(ctx context.Context, req admin.ProxyExtractRequest, node node.Node) ([]admin.ProxyExtractItem, error) {
 	channelID := fmt.Sprintf("extract-session-%d", time.Now().UnixNano())
+	port, listener, err := listenDynamicPort(r.bindHost())
+	if err != nil {
+		return nil, err
+	}
 	channelCfg := config.Channel{
 		ID:            channelID,
 		ListenHost:    r.bindHost(),
-		ListenPort:    0,
+		ListenPort:    port,
 		Region:        node.Region,
 		SelectionMode: config.SelectionManual,
 		ManualNodeID:  node.ID,
 		Enabled:       true,
 	}
 	if err := r.manager.UpsertChannel(ctx, channelCfg); err != nil {
+		_ = listener.Close()
 		r.manager.RemoveChannel(ctx, channelID)
 		return nil, err
 	}
-	port, listener, err := listenDynamicPort(r.bindHost())
-	if err != nil {
-		r.manager.RemoveChannel(ctx, channelID)
-		return nil, err
-	}
+	now := time.Now()
 	entry := &dynamicExtractEntry{
-		channelID: channelID,
-		listener:  listener,
-		server:    proxy.NewServer(listener.Addr().String(), channelID, r.cfg.ProxyUsername, r.cfg.ProxyPassword, r.manager, r.tracker),
-		port:      port,
-		node:      node,
+		channelID:  channelID,
+		listener:   listener,
+		server:     proxy.NewServer(listener.Addr().String(), channelID, r.cfg.ProxyUsername, r.cfg.ProxyPassword, r.manager, r.tracker),
+		port:       port,
+		node:       node,
+		createdAt:  now,
+		lastUsedAt: now,
 	}
 	go func() {
 		if err := entry.server.Serve(entry.listener); err != nil {
@@ -652,13 +692,11 @@ func (r *dynamicExtractRuntime) activateNode(ctx context.Context, req admin.Prox
 		r.manager.RemoveChannel(ctx, channelID)
 		return nil, err
 	}
-	old := r.current
+	entry.readyAt = time.Now()
+	entry.lastUsedAt = entry.readyAt
 	r.current = entry
+	r.sessions[channelID] = entry
 	r.currentNodeID = node.ID
-	if old != nil {
-		_ = old.listener.Close()
-		r.manager.RemoveChannel(ctx, old.channelID)
-	}
 	publicHost := extractPublicHost(req.Host, r.cfg.ProxyExtractAPIHost)
 	return []admin.ProxyExtractItem{{
 		ChannelID:     channelID,
@@ -680,21 +718,83 @@ func (r *dynamicExtractRuntime) SetConfig(cfg config.Config) {
 	} else {
 		r.validateTarget = "1.1.1.1:443"
 	}
-	if r.current != nil {
-		r.current.server.SetCredentials(cfg.ProxyUsername, cfg.ProxyPassword)
+	idleTTL, err := config.ParseProxyExtractIdleTTL(cfg.ProxyExtractIdleTTL)
+	if err != nil {
+		idleTTL = 10 * time.Minute
+	}
+	r.idleTTL = idleTTL
+	for _, session := range r.sessions {
+		session.server.SetCredentials(cfg.ProxyUsername, cfg.ProxyPassword)
 	}
 }
 
 func (r *dynamicExtractRuntime) Stop(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.current == nil {
-		return
+	for channelID, session := range r.sessions {
+		_ = session.listener.Close()
+		r.manager.RemoveChannel(ctx, channelID)
+		delete(r.sessions, channelID)
 	}
-	_ = r.current.listener.Close()
-	r.manager.RemoveChannel(ctx, r.current.channelID)
 	r.current = nil
 	r.currentNodeID = ""
+}
+
+func (r *dynamicExtractRuntime) RunCleanup(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.cleanupIdleSessions(ctx)
+		}
+	}
+}
+
+func (r *dynamicExtractRuntime) cleanupIdleSessions(ctx context.Context) {
+	now := time.Now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.idleTTL <= 0 {
+		return
+	}
+	for channelID, session := range r.sessions {
+		if r.sessionHasActiveConnection(session) {
+			continue
+		}
+		lastUsedAt := session.lastUsedAt
+		if lastUsedAt.IsZero() {
+			lastUsedAt = session.createdAt
+		}
+		if !lastUsedAt.IsZero() && now.Sub(lastUsedAt) < r.idleTTL {
+			continue
+		}
+		_ = session.listener.Close()
+		r.manager.RemoveChannel(ctx, channelID)
+		delete(r.sessions, channelID)
+		if r.current != nil && r.current.channelID == channelID {
+			r.current = nil
+		}
+	}
+}
+
+func (r *dynamicExtractRuntime) sessionHasActiveConnection(session *dynamicExtractEntry) bool {
+	if r.tracker == nil || session == nil {
+		return false
+	}
+	for _, record := range r.tracker.List() {
+		if record.ChannelID != session.channelID {
+			continue
+		}
+		if !session.readyAt.IsZero() && record.StartedAt.Before(session.readyAt) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (r *dynamicExtractRuntime) selectNodes(region string) ([]node.Node, error) {
@@ -814,6 +914,7 @@ func validateDynamicExtractProxy(ctx context.Context, host string, port int, use
 	if !strings.Contains(line, " 200 ") {
 		return fmt.Errorf("proxy validation returned %s", strings.TrimSpace(line))
 	}
+	_ = conn.Close()
 	if targetListener != nil {
 		_ = targetListener.Close()
 		<-targetDone
