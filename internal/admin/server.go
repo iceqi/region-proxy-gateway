@@ -375,6 +375,17 @@ func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	ch := body.Channel
 	ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
+	if ch.ListenHost == "" {
+		ch.ListenHost = "0.0.0.0"
+	}
+	if ch.ListenPort == 0 {
+		port, err := randomFreeListenPort(ch.ListenHost, s.usedChannelPorts(body.OriginalID))
+		if err != nil {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		ch.ListenPort = port
+	}
 	if err := ch.Validate(); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -1270,6 +1281,7 @@ func (s *Server) channelViewList() []channelView {
 	}
 
 	views := make([]channelView, 0, len(configured))
+	seen := map[string]struct{}{}
 	for _, ch := range configured {
 		ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
 		snapshot, ok := runtimeByID[ch.ID]
@@ -1294,8 +1306,109 @@ func (s *Server) channelViewList() []channelView {
 			view.ProxyAuthSOCKS5 = fmt.Sprintf("socks5://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
 		}
 		views = append(views, view)
+		seen[snapshot.ID] = struct{}{}
+	}
+	for _, snapshot := range s.extractSessionChannelList() {
+		if _, ok := seen[snapshot.ID]; ok {
+			continue
+		}
+		view := channelView{Snapshot: snapshot}
+		if proxyUser != "" || proxyPass != "" {
+			routeUser := proxyRegionUsername(proxyUser, snapshot.Region)
+			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+			view.ProxyAuthSOCKS5 = fmt.Sprintf("socks5://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+		}
+		views = append(views, view)
 	}
 	return views
+}
+
+func (s *Server) extractSessionChannelList() []channel.Snapshot {
+	snapshots := s.runtimeChannelList()
+	filtered := make([]channel.Snapshot, 0)
+	for _, snapshot := range snapshots {
+		if strings.HasPrefix(snapshot.ID, "extract-session-") {
+			filtered = append(filtered, snapshot)
+		}
+	}
+	return filtered
+}
+
+func (s *Server) usedChannelPorts(skipID string) map[int]struct{} {
+	used := map[int]struct{}{}
+	if s.config.AdminPort > 0 {
+		used[s.config.AdminPort] = struct{}{}
+	}
+	if s.config.RotatingGatewayPort > 0 {
+		used[s.config.RotatingGatewayPort] = struct{}{}
+	}
+	if s.config.ProxyExtractAPIPort > 0 {
+		used[s.config.ProxyExtractAPIPort] = struct{}{}
+	}
+	for _, snapshot := range s.runtimeChannelList() {
+		if snapshot.ID == skipID {
+			continue
+		}
+		if snapshot.ListenPort > 0 {
+			used[snapshot.ListenPort] = struct{}{}
+		}
+	}
+	if s.storage != nil {
+		channels, err := s.storage.ListChannels(context.Background())
+		if err == nil {
+			for _, ch := range channels {
+				if ch.ID == skipID {
+					continue
+				}
+				if ch.ListenPort > 0 {
+					used[ch.ListenPort] = struct{}{}
+				}
+			}
+		}
+	} else {
+		for _, ch := range s.config.Channels {
+			if ch.ID == skipID {
+				continue
+			}
+			if ch.ListenPort > 0 {
+				used[ch.ListenPort] = struct{}{}
+			}
+		}
+	}
+	return used
+}
+
+func randomFreeListenPort(host string, used map[int]struct{}) (int, error) {
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	for i := 0; i < 200; i++ {
+		port, err := randomPort(20000, 60999)
+		if err != nil {
+			return 0, err
+		}
+		if _, ok := used[port]; ok {
+			continue
+		}
+		listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+		if err != nil {
+			continue
+		}
+		_ = listener.Close()
+		return port, nil
+	}
+	return 0, fmt.Errorf("no free listen port available")
+}
+
+func randomPort(min, max int) (int, error) {
+	if max <= min {
+		return min, nil
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max-min+1)))
+	if err != nil {
+		return 0, err
+	}
+	return min + int(n.Int64()), nil
 }
 
 func saveChannelInConfig(channels []config.Channel, originalID string, ch config.Channel) []config.Channel {

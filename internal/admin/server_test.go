@@ -1149,6 +1149,92 @@ func TestCreateChannelPersistsConfig(t *testing.T) {
 	}
 }
 
+func TestCreateChannelWithZeroPortAssignsFreePort(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	cfg.Channels = []config.Channel{{
+		ID:            "jp-3000",
+		ListenHost:    "127.0.0.1",
+		ListenPort:    3000,
+		Region:        "jp",
+		SelectionMode: config.SelectionAuto,
+		Enabled:       true,
+	}}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels", bytes.NewBufferString(`{"id":"any-auto","listen_host":"0.0.0.0","listen_port":0,"region":"","rotate_minutes":0,"selection_mode":"auto","enabled":true}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load saved config: %v", err)
+	}
+	if len(loaded.Channels) != 2 {
+		t.Fatalf("channels = %d, want 2", len(loaded.Channels))
+	}
+	got := loaded.Channels[1]
+	if got.ListenPort <= 0 || got.ListenPort == 3000 {
+		t.Fatalf("assigned listen port = %d, want random free port", got.ListenPort)
+	}
+	if got.Region != "" {
+		t.Fatalf("region = %q, want empty any-region channel", got.Region)
+	}
+}
+
+func TestChannelListIncludesExtractAPIChannels(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyUsername = "iceqi"
+	cfg.ProxyPassword = "secret"
+	if err := manager.UpsertChannel(context.Background(), config.Channel{
+		ID:            "extract-session-123",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    38605,
+		Region:        "jp",
+		SelectionMode: config.SelectionManual,
+		ManualNodeID:  "jp-1",
+		Enabled:       true,
+	}); err != nil {
+		t.Fatalf("upsert extract channel: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode channels: %v", err)
+	}
+	found := false
+	for _, ch := range body.Channels {
+		if ch.ID == "extract-session-123" {
+			found = true
+			if ch.ListenPort != 38605 || ch.ProxyAuthHTTP == "" {
+				t.Fatalf("extract channel = %+v, want visible proxy auth on port 38605", ch)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("channels = %+v, want extract-session-123 visible", body.Channels)
+	}
+}
+
 func TestSaveChannelReloadsRuntimeWithoutRestartingService(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	path := filepath.Join(t.TempDir(), "config.json")

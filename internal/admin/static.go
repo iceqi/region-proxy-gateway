@@ -362,8 +362,13 @@ const indexHTML = `<!doctype html>
         <div class="modal-grid">
           <a-form-item label="ID"><a-input v-model:value="channelForm.id" placeholder="jp-3000"></a-input></a-form-item>
           <a-form-item label="监听地址"><a-input v-model:value="channelForm.listen_host" placeholder="0.0.0.0"></a-input></a-form-item>
-          <a-form-item label="端口"><a-input-number v-model:value="channelForm.listen_port" :min="1" :max="65535" style="width:100%"></a-input-number></a-form-item>
-          <a-form-item label="地区"><a-input v-model:value="channelForm.region" placeholder="留空或 * 表示不限地区"></a-input></a-form-item>
+          <a-form-item label="端口"><a-input-number v-model:value="channelForm.listen_port" :min="0" :max="65535" placeholder="留空/0 自动分配" style="width:100%"></a-input-number></a-form-item>
+          <a-form-item label="地区">
+            <a-select v-model:value="channelForm.region" allow-clear placeholder="不限地区 / 随机可用节点">
+              <a-select-option value="">不限地区（*）</a-select-option>
+              <a-select-option v-for="item in regions" :key="item" :value="item">{{ regionText(item) }}（{{ item }}）</a-select-option>
+            </a-select>
+          </a-form-item>
           <a-form-item label="轮换分钟"><a-input-number v-model:value="channelForm.rotate_minutes" :min="0" style="width:100%"></a-input-number></a-form-item>
           <a-form-item label="旋转网关"><a-switch v-model:checked="channelForm.rotate_on_dial"></a-switch></a-form-item>
           <a-form-item label="模式">
@@ -455,7 +460,7 @@ const indexHTML = `<!doctype html>
             { title: '纯净度', key: 'purity', width: 122, sorter: (a, b) => Number(b.purity_score || 0) - Number(a.purity_score || 0), customRender: ({ record }) => h(antd.Tag, { color: this.purityColor(record.purity_score) }, () => (record.purity_score ? record.purity_score + '/100 ' : '未知 ') + this.qualityText(record.quality)) },
             { title: 'ASN / 运营商', key: 'owner', width: 190, customRender: ({ record }) => h('div', [h('div', record.owner || '-'), h('div', { class: 'muted' }, record.asn || record.as_name || '')]) },
             { title: '状态', key: 'status', width: 180, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.available ? 'green' : 'red' }, () => record.available ? '可用' : '不可用'), h('div', { class: 'muted' }, this.probeMessageText(record))]) },
-            { title: '操作', key: 'actions', width: 150, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', loading: Boolean(this.probing[record.id]), onClick: () => this.probeNode(record.id) }, () => '测速'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openNodeSwitchDialog(record) }, () => '切换')]) }
+            { title: '操作', key: 'actions', width: 210, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', loading: Boolean(this.probing[record.id]), onClick: () => this.probeNode(record.id) }, () => '测速'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openNodeSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', onClick: () => this.openChannelDialogForNode(record) }, () => '建通道')]) }
           ],
           channelColumns: [
             { title: 'ID', dataIndex: 'id', width: 120 },
@@ -567,7 +572,7 @@ const indexHTML = `<!doctype html>
           message.success('已退出登录');
         },
         emptyChannelForm() {
-          return { id: '', listen_host: '0.0.0.0', listen_port: 3000, region: '', rotate_minutes: 0, rotate_on_dial: false, selection_mode: 'auto', manual_node_id: '', enabled: true };
+          return { id: '', listen_host: '0.0.0.0', listen_port: null, region: '', rotate_minutes: 0, rotate_on_dial: false, selection_mode: 'auto', manual_node_id: '', enabled: true };
         },
         filterNodeList(nodes, filters) {
           const keyword = String(filters.keyword || '').toLowerCase();
@@ -711,8 +716,21 @@ const indexHTML = `<!doctype html>
             enabled: row.enabled
           } : this.emptyChannelForm();
         },
+        openChannelDialogForNode(node) {
+          const form = this.emptyChannelForm();
+          form.id = this.suggestChannelID(node.region);
+          form.region = node.region || '';
+          form.selection_mode = 'manual';
+          form.manual_node_id = node.id;
+          form.rotate_minutes = 10;
+          this.channelDialog.open = true;
+          this.channelDialog.editing = false;
+          this.channelDialog.originalID = '';
+          this.channelForm = form;
+        },
         async saveChannel() {
           const channel = Object.assign({}, this.channelForm, { region: String(this.channelForm.region || '').toLowerCase(), original_id: this.channelDialog.originalID });
+          if (!channel.listen_port) channel.listen_port = 0;
           if (channel.selection_mode !== 'manual') delete channel.manual_node_id;
           try {
             const body = await this.request('channels', { method: 'POST', body: JSON.stringify(channel) });
@@ -793,6 +811,10 @@ const indexHTML = `<!doctype html>
         },
         normalizeRegion(region) {
           return String(region || '').trim().toLowerCase();
+        },
+        suggestChannelID(region) {
+          const prefix = this.normalizeRegion(region) || 'any';
+          return prefix + '-' + Date.now().toString().slice(-6);
         },
         isAnyRegion(region) {
           const normalized = this.normalizeRegion(region);
