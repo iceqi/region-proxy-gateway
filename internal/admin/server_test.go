@@ -100,6 +100,42 @@ func TestExtractProxiesRequiresAdminAuth(t *testing.T) {
 	}
 }
 
+func TestExtractProxiesCanUseQueryToken(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyExtractAPIToken = "extract-token"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?token=extract-token&format=text&count=1", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want ok with token", rec.Code, rec.Body.String())
+	}
+}
+
+func TestExtractProxiesRejectsWrongQueryToken(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyExtractAPIToken = "extract-token"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?token=wrong&format=text&count=1", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d body=%s, want unauthorized", rec.Code, rec.Body.String())
+	}
+}
+
 func TestExtractProxiesReturnsJSONAndText(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	cfg := config.Default()
@@ -464,7 +500,7 @@ func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
 	}
 	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"20m","proxy_extract_cache_ttl":"45s"}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"20m","proxy_extract_cache_ttl":"45s","proxy_extract_api_token":"new-token"}`))
 	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
 	rec := httptest.NewRecorder()
 
@@ -479,6 +515,9 @@ func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
 	}
 	if loaded.ProxyExtractCacheTTL != "45s" {
 		t.Fatalf("proxy extract cache ttl = %q, want 45s", loaded.ProxyExtractCacheTTL)
+	}
+	if loaded.ProxyExtractAPIToken != "new-token" {
+		t.Fatalf("proxy extract api token = %q, want new-token", loaded.ProxyExtractAPIToken)
 	}
 }
 

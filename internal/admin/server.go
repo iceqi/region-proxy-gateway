@@ -133,7 +133,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	if !s.authorized(r) {
+	if !s.authorized(r) && !s.authorizedProxyExtractToken(r, adminPath) {
 		s.writeUnauthorized(w)
 		return
 	}
@@ -231,6 +231,26 @@ func (s *Server) authorized(r *http.Request) bool {
 	userOK := subtle.ConstantTimeCompare([]byte(username), []byte(adminUser)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(password), []byte(adminPass)) == 1
 	return userOK && passOK
+}
+
+func (s *Server) authorizedProxyExtractToken(r *http.Request, adminPath string) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	if strings.TrimPrefix(r.URL.Path, adminPath) != "/api/proxies/extract" {
+		return false
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	if token == "" {
+		return false
+	}
+	s.configMu.Lock()
+	expected := s.config.ProxyExtractAPIToken
+	s.configMu.Unlock()
+	if expected == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(expected)) == 1
 }
 
 func (s *Server) currentAdminPath() string {
@@ -548,6 +568,7 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		AdminPassword        string `json:"admin_password"`
 		ProxyUsername        string `json:"proxy_username"`
 		ProxyPassword        string `json:"proxy_password"`
+		ProxyExtractAPIToken string `json:"proxy_extract_api_token"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -581,6 +602,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(body.ProxyPassword) != "" {
 			cfg.ProxyPassword = strings.TrimSpace(body.ProxyPassword)
+		}
+		if strings.TrimSpace(body.ProxyExtractAPIToken) != "" {
+			cfg.ProxyExtractAPIToken = strings.TrimSpace(body.ProxyExtractAPIToken)
 		}
 		if _, err := config.ParseNodeRefreshInterval(interval); err != nil {
 			return cfg, err
@@ -1206,6 +1230,7 @@ func compactNode(n node.Node) nodeView {
 type settingsView struct {
 	NodeRefreshInterval  string `json:"node_refresh_interval"`
 	ProxyExtractCacheTTL string `json:"proxy_extract_cache_ttl"`
+	ProxyExtractAPIToken string `json:"proxy_extract_api_token"`
 	AdminPath            string `json:"admin_path"`
 	AdminUsername        string `json:"admin_username"`
 	ProxyUsername        string `json:"proxy_username"`
@@ -1219,6 +1244,7 @@ func (s *Server) safeSettings() settingsView {
 	return settingsView{
 		NodeRefreshInterval:  s.config.NodeRefreshInterval,
 		ProxyExtractCacheTTL: s.config.ProxyExtractCacheTTL,
+		ProxyExtractAPIToken: s.config.ProxyExtractAPIToken,
 		AdminPath:            s.config.AdminPath,
 		AdminUsername:        s.config.AdminUsername,
 		ProxyUsername:        s.config.ProxyUsername,

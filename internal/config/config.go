@@ -28,6 +28,7 @@ type Config struct {
 	AdminPassword        string    `json:"admin_password"`
 	ProxyUsername        string    `json:"proxy_username"`
 	ProxyPassword        string    `json:"proxy_password"`
+	ProxyExtractAPIToken string    `json:"proxy_extract_api_token"`
 	NodeRefreshInterval  string    `json:"node_refresh_interval"`
 	ProxyExtractCacheTTL string    `json:"proxy_extract_cache_ttl"`
 	DataDir              string    `json:"data_dir"`
@@ -57,6 +58,7 @@ func Default() Config {
 		AdminPassword:        "change-me-admin",
 		ProxyUsername:        "proxy",
 		ProxyPassword:        "change-me-proxy",
+		ProxyExtractAPIToken: randomToken(32),
 		NodeRefreshInterval:  "20m",
 		ProxyExtractCacheTTL: "30s",
 		DataDir:              "./data",
@@ -95,10 +97,13 @@ func LoadOrCreate(path string) (Config, error) {
 }
 
 func randomAdminPath() string {
+	return "/admin-" + randomToken(16)
+}
+
+func randomToken(length int) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	var builder strings.Builder
-	builder.WriteString("/admin-")
-	for i := 0; i < 16; i++ {
+	for i := 0; i < length; i++ {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
 		if err != nil {
 			builder.WriteByte('x')
@@ -225,6 +230,9 @@ func (c *Config) normalize() {
 	if c.ProxyExtractCacheTTL == "" {
 		c.ProxyExtractCacheTTL = "30s"
 	}
+	if strings.TrimSpace(c.ProxyExtractAPIToken) == "" {
+		c.ProxyExtractAPIToken = randomToken(32)
+	}
 	for i := range c.Channels {
 		c.Channels[i].ID = strings.TrimSpace(c.Channels[i].ID)
 		c.Channels[i].Region = strings.ToLower(strings.TrimSpace(c.Channels[i].Region))
@@ -258,6 +266,9 @@ func (c Config) Validate() error {
 	}
 	if c.ProxyPassword == "" {
 		return fmt.Errorf("proxy password is required")
+	}
+	if strings.TrimSpace(c.ProxyExtractAPIToken) == "" {
+		return fmt.Errorf("proxy extract api token is required")
 	}
 	switch c.TunnelBackend {
 	case TunnelBackendFake, TunnelBackendOpenVPN:
