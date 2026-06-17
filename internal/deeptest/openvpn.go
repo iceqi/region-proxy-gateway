@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"net"
 	"net/http"
 	"strings"
@@ -31,7 +32,7 @@ func (t OpenVPNTester) Test(ctx context.Context, n node.Node) Result {
 		return result
 	}
 
-	deviceName := "rpgtest0"
+	deviceName := testDeviceName(n.ID)
 	sessionName := "deeptest-" + sanitizeName(n.ID)
 	vpn := tunnel.NewOpenVPN(tunnel.OpenVPNConfig{
 		DataDir:      t.DataDir,
@@ -144,6 +145,10 @@ func firstDeviceDialer(dialer tunnel.DeviceDialer) tunnel.DeviceDialer {
 		return dialer
 	}
 	return tunnel.SystemDeviceDialer{}
+}
+
+func testDeviceName(nodeID string) string {
+	return fmt.Sprintf("rpt%08x", crc32.ChecksumIEEE([]byte(nodeID)))
 }
 
 func sanitizeName(value string) string {

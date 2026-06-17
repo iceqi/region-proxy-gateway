@@ -191,6 +191,7 @@ const indexHTML = `<!doctype html>
         <div class="stat"><div class="stat-label">在线连接</div><div class="stat-value">{{ connections.length }}</div></div>
         <div class="stat"><div class="stat-label">深测队列</div><div class="stat-value" style="font-size:16px">{{ deepTestSummary }}</div></div>
         <div class="stat"><div class="stat-label">节点更新间隔</div><div class="stat-value">{{ settings.node_refresh_interval || '-' }}</div></div>
+        <div class="stat"><div class="stat-label">提取缓存</div><div class="stat-value">{{ settings.proxy_extract_cache_ttl || '30s' }}</div></div>
         <div class="stat"><div class="stat-label">代理主机</div><div class="stat-value" style="font-size:16px">{{ proxyHost }}</div></div>
       </section>
 
@@ -289,7 +290,7 @@ const indexHTML = `<!doctype html>
                 <div class="section-icon settings">⚙</div>
                 <div>
                   <div class="card-title">访问与认证</div>
-                  <div class="card-subtitle">修改管理入口、后台账号、代理账号和节点刷新间隔。</div>
+                  <div class="card-subtitle">修改管理入口、后台账号、代理账号、节点刷新间隔和代理提取缓存。</div>
                 </div>
               </div>
               <div class="card-actions"><span class="module-chip">热更新配置</span></div>
@@ -302,9 +303,11 @@ const indexHTML = `<!doctype html>
                 <div class="settings-item"><a-form-item label="代理账号"><a-input v-model:value="settings.proxy_username" placeholder="proxy"></a-input></a-form-item></div>
                 <div class="settings-item"><a-form-item label="代理新密码"><a-input-password v-model:value="settings.proxy_password" placeholder="留空则不修改"></a-input-password></a-form-item></div>
                 <div class="settings-item"><a-form-item label="节点更新间隔"><a-input v-model:value="settings.node_refresh_interval" placeholder="20m"></a-input></a-form-item></div>
+                <div class="settings-item"><a-form-item label="提取缓存 TTL"><a-input v-model:value="settings.proxy_extract_cache_ttl" placeholder="30s"></a-input></a-form-item></div>
               </div>
+              <a-alert type="info" show-icon style="margin-bottom: 16px" :message="'API 提取代理：' + extractApiExample"></a-alert>
               <div class="settings-save">
-                <span class="muted">密码不会回显；代理账号密码保存后立即热更新，登录入口和后台账号下次请求立即生效。</span>
+                <span class="muted">提取 API 需要后台账号密码；支持 format=json|text、scheme=http|socks5|no-scheme、region 和 count 参数。</span>
                 <a-button type="primary" @click="saveSettings">保存设置</a-button>
               </div>
             </div>
@@ -389,7 +392,7 @@ const indexHTML = `<!doctype html>
           nodes: [],
           connections: [],
           deepStats: { pending: 0, running: 0, success: 0, failed: 0 },
-          settings: { node_refresh_interval: '20m', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
+          settings: { node_refresh_interval: '20m', proxy_extract_cache_ttl: '30s', admin_path: '/admin', admin_username: 'admin', admin_password: '', proxy_username: 'proxy', proxy_password: '' },
           filters: { region: undefined, ipType: undefined, quality: undefined, available: undefined, maxLatency: null, keyword: '', limit: 120 },
           switchFilters: { ipType: undefined, quality: undefined, maxLatency: null, keyword: '' },
           channelForm: this.emptyChannelForm(),
@@ -449,6 +452,9 @@ const indexHTML = `<!doctype html>
         deepTestSummary() {
           const s = this.deepStats || {};
           return '待 ' + Number(s.pending || 0) + ' / 跑 ' + Number(s.running || 0) + ' / 成 ' + Number(s.success || 0) + ' / 败 ' + Number(s.failed || 0);
+        },
+        extractApiExample() {
+          return window.location.origin + apiBase + '/proxies/extract?format=text&scheme=http&count=1';
         },
         switchDialogNodes() {
           if (!this.channelSwitchDialog.channel) return [];

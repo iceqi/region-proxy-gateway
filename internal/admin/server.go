@@ -1,11 +1,16 @@
 package admin
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,23 +24,28 @@ import (
 )
 
 type Server struct {
-	channels      *channel.Manager
-	nodes         *node.Store
-	connections   *connection.Tracker
-	refreshNodes  func(context.Context) ([]node.Node, error)
-	checkNode     func(context.Context, node.Node) node.Node
-	restarter     func(context.Context) error
-	reloadRuntime func(context.Context) error
-	configPath    string
-	config        config.Config
-	configMu      sync.Mutex
-	storage       *storage.Store
-	adminPath     string
-	adminUser     string
-	adminPass     string
+	channels              *channel.Manager
+	nodes                 *node.Store
+	connections           *connection.Tracker
+	refreshNodes          func(context.Context) ([]node.Node, error)
+	checkNode             func(context.Context, node.Node) node.Node
+	restarter             func(context.Context) error
+	reloadRuntime         func(context.Context) error
+	configPath            string
+	config                config.Config
+	configMu              sync.Mutex
+	proxyExtractMu        sync.Mutex
+	proxyExtract          proxyExtractCache
+	proxyExtractValidator proxyExtractValidator
+	storage               *storage.Store
+	adminPath             string
+	adminUser             string
+	adminPass             string
 }
 
 type Option func(*Server)
+
+type proxyExtractValidator func(context.Context, proxyExtractItem) error
 
 func WithConfig(path string, cfg config.Config) Option {
 	return func(s *Server) {
@@ -87,6 +97,12 @@ func WithRestarter(restart func(context.Context) error) Option {
 func WithRuntimeReloader(reload func(context.Context) error) Option {
 	return func(s *Server) {
 		s.reloadRuntime = reload
+	}
+}
+
+func WithProxyExtractorValidator(validator proxyExtractValidator) Option {
+	return func(s *Server) {
+		s.proxyExtractValidator = validator
 	}
 }
 
@@ -194,6 +210,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, http.StatusOK, map[string]any{
 			"nodes": s.nodeViewList(r.URL.Query().Get("region")),
 		})
+	case "/api/proxies/extract":
+		s.handleExtractProxies(w, r)
 	case "/api/deep-tests/status":
 		s.handleDeepTestStatus(w, r)
 	default:
@@ -523,12 +541,13 @@ func cleanNodeIDsKeepingDuplicates(ids []string, limit int) []string {
 
 func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		NodeRefreshInterval string `json:"node_refresh_interval"`
-		AdminPath           string `json:"admin_path"`
-		AdminUsername       string `json:"admin_username"`
-		AdminPassword       string `json:"admin_password"`
-		ProxyUsername       string `json:"proxy_username"`
-		ProxyPassword       string `json:"proxy_password"`
+		NodeRefreshInterval  string `json:"node_refresh_interval"`
+		ProxyExtractCacheTTL string `json:"proxy_extract_cache_ttl"`
+		AdminPath            string `json:"admin_path"`
+		AdminUsername        string `json:"admin_username"`
+		AdminPassword        string `json:"admin_password"`
+		ProxyUsername        string `json:"proxy_username"`
+		ProxyPassword        string `json:"proxy_password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -541,6 +560,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, err := s.updateConfig(func(cfg config.Config) (config.Config, error) {
 		cfg.NodeRefreshInterval = interval
+		if strings.TrimSpace(body.ProxyExtractCacheTTL) != "" {
+			cfg.ProxyExtractCacheTTL = strings.TrimSpace(body.ProxyExtractCacheTTL)
+		}
 		if strings.TrimSpace(body.AdminPath) != "" {
 			adminPath, err := normalizeEditableAdminPath(body.AdminPath)
 			if err != nil {
@@ -563,6 +585,9 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		if _, err := config.ParseNodeRefreshInterval(interval); err != nil {
 			return cfg, err
 		}
+		if _, err := config.ParseProxyExtractCacheTTL(cfg.ProxyExtractCacheTTL); err != nil {
+			return cfg, err
+		}
 		if err := cfg.Validate(); err != nil {
 			return cfg, err
 		}
@@ -580,6 +605,263 @@ func (s *Server) handleSaveSettings(w http.ResponseWriter, r *http.Request) {
 		"runtime_error":    reloadError,
 		"restart_required": false,
 	})
+}
+
+type proxyExtractCache struct {
+	key       string
+	expiresAt time.Time
+	items     []proxyExtractItem
+}
+
+type proxyExtractItem struct {
+	ChannelID     string `json:"channel_id"`
+	Region        string `json:"region"`
+	CurrentExitIP string `json:"current_exit_ip"`
+	HTTP          string `json:"http"`
+	SOCKS5        string `json:"socks5"`
+	NoScheme      string `json:"no_scheme"`
+	ValidatedAt   string `json:"validated_at"`
+	Cached        bool   `json:"cached"`
+	listenHost    string
+	listenPort    int
+	username      string
+	password      string
+}
+
+func (s *Server) handleExtractProxies(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	format := strings.ToLower(strings.TrimSpace(query.Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "text" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "format must be json or text"})
+		return
+	}
+	scheme := strings.ToLower(strings.TrimSpace(query.Get("scheme")))
+	if scheme == "" {
+		scheme = "http"
+	}
+	if scheme != "http" && scheme != "socks5" && scheme != "no-scheme" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "scheme must be http, socks5, or no-scheme"})
+		return
+	}
+	count := 1
+	if raw := strings.TrimSpace(query.Get("count")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "count must be >= 1"})
+			return
+		}
+		count = parsed
+	}
+	region := strings.ToLower(strings.TrimSpace(query.Get("region")))
+
+	items, cached, err := s.extractProxies(r.Context(), proxyExtractRequest{
+		region: region,
+		scheme: scheme,
+		count:  count,
+		host:   requestHost(r),
+	})
+	if err != nil {
+		s.writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	for i := range items {
+		items[i].Cached = cached
+	}
+	if format == "text" {
+		lines := make([]string, 0, len(items))
+		for _, item := range items {
+			lines = append(lines, item.proxyForScheme(scheme))
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(strings.Join(lines, "\n") + "\n"))
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"proxies": items,
+		"cached":  cached,
+		"ttl":     s.proxyExtractCacheTTL().String(),
+	})
+}
+
+type proxyExtractRequest struct {
+	region string
+	scheme string
+	count  int
+	host   string
+}
+
+func (r proxyExtractRequest) cacheKey() string {
+	return r.region + "|" + r.scheme + "|" + strconv.Itoa(r.count) + "|" + r.host
+}
+
+func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([]proxyExtractItem, bool, error) {
+	ttl := s.proxyExtractCacheTTL()
+	key := req.cacheKey()
+	now := time.Now()
+	if ttl > 0 {
+		s.proxyExtractMu.Lock()
+		if s.proxyExtract.key == key && now.Before(s.proxyExtract.expiresAt) && len(s.proxyExtract.items) >= req.count {
+			items := append([]proxyExtractItem(nil), s.proxyExtract.items[:req.count]...)
+			s.proxyExtractMu.Unlock()
+			return items, true, nil
+		}
+		s.proxyExtractMu.Unlock()
+	}
+
+	candidates := s.extractCandidates(req)
+	items := make([]proxyExtractItem, 0, req.count)
+	for _, item := range candidates {
+		validateCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		err := s.validateExtractedProxy(validateCtx, item)
+		cancel()
+		if err != nil {
+			continue
+		}
+		item.ValidatedAt = time.Now().Format(time.RFC3339)
+		items = append(items, item)
+		if len(items) >= req.count {
+			break
+		}
+	}
+	if len(items) == 0 {
+		return nil, false, fmt.Errorf("no validated proxies available")
+	}
+	if ttl > 0 {
+		s.proxyExtractMu.Lock()
+		s.proxyExtract = proxyExtractCache{key: key, expiresAt: time.Now().Add(ttl), items: append([]proxyExtractItem(nil), items...)}
+		s.proxyExtractMu.Unlock()
+	}
+	return items, false, nil
+}
+
+func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
+	s.configMu.Lock()
+	username := s.config.ProxyUsername
+	password := s.config.ProxyPassword
+	s.configMu.Unlock()
+
+	snapshots := s.channelList()
+	items := make([]proxyExtractItem, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		if !snapshot.Enabled || !snapshot.TunnelStatus.Ready {
+			continue
+		}
+		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
+			continue
+		}
+		host := proxyPublicHost(snapshot.ListenHost, req.host)
+		noScheme := proxyAuthHost(username, password, host, snapshot.ListenPort)
+		items = append(items, proxyExtractItem{
+			ChannelID:     snapshot.ID,
+			Region:        snapshot.Region,
+			CurrentExitIP: snapshot.CurrentExitIP,
+			HTTP:          "http://" + noScheme,
+			SOCKS5:        "socks5://" + noScheme,
+			NoScheme:      noScheme,
+			listenHost:    snapshot.ListenHost,
+			listenPort:    snapshot.ListenPort,
+			username:      username,
+			password:      password,
+		})
+	}
+	return items
+}
+
+func (s *Server) validateExtractedProxy(ctx context.Context, item proxyExtractItem) error {
+	if s.proxyExtractValidator != nil {
+		return s.proxyExtractValidator(ctx, item)
+	}
+	address := net.JoinHostPort(proxyValidationHost(item.listenHost), strconv.Itoa(item.listenPort))
+	dialer := net.Dialer{Timeout: 8 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte(item.username + ":" + item.password))
+	if _, err := fmt.Fprintf(conn, "CONNECT 1.1.1.1:443 HTTP/1.1\r\nHost: 1.1.1.1:443\r\nProxy-Authorization: Basic %s\r\n\r\n", auth); err != nil {
+		return err
+	}
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(line, " 200 ") {
+		return fmt.Errorf("proxy validation returned %s", strings.TrimSpace(line))
+	}
+	return nil
+}
+
+func (s *Server) proxyExtractCacheTTL() time.Duration {
+	s.configMu.Lock()
+	value := s.config.ProxyExtractCacheTTL
+	s.configMu.Unlock()
+	ttl, err := config.ParseProxyExtractCacheTTL(value)
+	if err != nil {
+		return 30 * time.Second
+	}
+	return ttl
+}
+
+func (p proxyExtractItem) proxyForScheme(scheme string) string {
+	switch scheme {
+	case "socks5":
+		return p.SOCKS5
+	case "no-scheme":
+		return p.NoScheme
+	default:
+		return p.HTTP
+	}
+}
+
+func requestHost(r *http.Request) string {
+	host := r.Host
+	if host == "" {
+		return ""
+	}
+	if strings.Contains(host, ":") {
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			return h
+		}
+	}
+	return host
+}
+
+func proxyPublicHost(listenHost string, requestHost string) string {
+	host := strings.TrimSpace(listenHost)
+	if host == "" || host == "0.0.0.0" || host == "127.0.0.1" || host == "localhost" || host == "::" {
+		if requestHost != "" {
+			return requestHost
+		}
+		return host
+	}
+	return host
+}
+
+func proxyValidationHost(listenHost string) string {
+	host := strings.TrimSpace(listenHost)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func proxyAuthHost(username string, password string, host string, port int) string {
+	auth := ""
+	if username != "" || password != "" {
+		auth = url.QueryEscape(username) + ":" + url.QueryEscape(password) + "@"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("%s%s:%d", auth, host, port)
 }
 
 func (s *Server) handleDeleteChannel(w http.ResponseWriter, r *http.Request) {
@@ -922,24 +1204,26 @@ func compactNode(n node.Node) nodeView {
 }
 
 type settingsView struct {
-	NodeRefreshInterval string `json:"node_refresh_interval"`
-	AdminPath           string `json:"admin_path"`
-	AdminUsername       string `json:"admin_username"`
-	ProxyUsername       string `json:"proxy_username"`
-	AdminPasswordSet    bool   `json:"admin_password_set"`
-	ProxyPasswordSet    bool   `json:"proxy_password_set"`
+	NodeRefreshInterval  string `json:"node_refresh_interval"`
+	ProxyExtractCacheTTL string `json:"proxy_extract_cache_ttl"`
+	AdminPath            string `json:"admin_path"`
+	AdminUsername        string `json:"admin_username"`
+	ProxyUsername        string `json:"proxy_username"`
+	AdminPasswordSet     bool   `json:"admin_password_set"`
+	ProxyPasswordSet     bool   `json:"proxy_password_set"`
 }
 
 func (s *Server) safeSettings() settingsView {
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	return settingsView{
-		NodeRefreshInterval: s.config.NodeRefreshInterval,
-		AdminPath:           s.config.AdminPath,
-		AdminUsername:       s.config.AdminUsername,
-		ProxyUsername:       s.config.ProxyUsername,
-		AdminPasswordSet:    s.config.AdminPassword != "",
-		ProxyPasswordSet:    s.config.ProxyPassword != "",
+		NodeRefreshInterval:  s.config.NodeRefreshInterval,
+		ProxyExtractCacheTTL: s.config.ProxyExtractCacheTTL,
+		AdminPath:            s.config.AdminPath,
+		AdminUsername:        s.config.AdminUsername,
+		ProxyUsername:        s.config.ProxyUsername,
+		AdminPasswordSet:     s.config.AdminPassword != "",
+		ProxyPasswordSet:     s.config.ProxyPassword != "",
 	}
 }
 

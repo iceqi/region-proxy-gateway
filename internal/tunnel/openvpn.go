@@ -28,6 +28,8 @@ type OpenVPNProcessStarter interface {
 
 type DeviceWaiter func(ctx context.Context, deviceName string, timeout time.Duration) error
 
+type DeviceValidator func(ctx context.Context, deviceName string) error
+
 type ExecOpenVPNProcessStarter struct{}
 
 func (ExecOpenVPNProcessStarter) Start(ctx context.Context, command []string) (OpenVPNProcess, error) {
@@ -107,6 +109,7 @@ type OpenVPNConfig struct {
 	Starter          OpenVPNProcessStarter
 	DeviceDialer     DeviceDialer
 	DeviceWaiter     DeviceWaiter
+	DeviceValidator  DeviceValidator
 	ReadinessTimeout time.Duration
 	StopTimeout      time.Duration
 }
@@ -134,6 +137,7 @@ type openVPNSession struct {
 
 func NewOpenVPN(cfg OpenVPNConfig) *OpenVPN {
 	useSystemStarter := cfg.Starter == nil
+	hasDeviceDialer := cfg.DeviceDialer != nil
 	if cfg.Starter == nil {
 		cfg.Starter = ExecOpenVPNProcessStarter{}
 	}
@@ -145,6 +149,17 @@ func NewOpenVPN(cfg OpenVPNConfig) *OpenVPN {
 			cfg.DeviceWaiter = waitForDeviceReady
 		} else {
 			cfg.DeviceWaiter = assumeDeviceReady
+		}
+	}
+	if cfg.DeviceValidator == nil {
+		if useSystemStarter || hasDeviceDialer {
+			cfg.DeviceValidator = func(ctx context.Context, deviceName string) error {
+				conn, err := cfg.DeviceDialer.DialContext(ctx, deviceName, "tcp", "1.1.1.1:443")
+				if err != nil {
+					return err
+				}
+				return conn.Close()
+			}
 		}
 	}
 	if cfg.ReadinessTimeout == 0 {
@@ -320,6 +335,11 @@ func (o *OpenVPN) Switch(ctx context.Context, n node.Node) error {
 		o.setError(err)
 		return err
 	}
+	if err := o.validateSession(ctx, newSession); err != nil {
+		_ = o.stopProcess(context.Background(), newSession.process, newSession.monitorDone)
+		o.setError(err)
+		return err
+	}
 
 	o.mu.Lock()
 	o.applySessionLocked(newSession)
@@ -327,6 +347,18 @@ func (o *OpenVPN) Switch(ctx context.Context, n node.Node) error {
 
 	if oldProcess != nil {
 		_ = o.stopProcess(ctx, oldProcess, oldDone)
+	}
+	return nil
+}
+
+func (o *OpenVPN) validateSession(ctx context.Context, session openVPNSession) error {
+	if o.cfg.DeviceValidator == nil {
+		return nil
+	}
+	validateCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	if err := o.cfg.DeviceValidator(validateCtx, session.options.DeviceName); err != nil {
+		return fmt.Errorf("validate openvpn device %q: %w", session.options.DeviceName, err)
 	}
 	return nil
 }

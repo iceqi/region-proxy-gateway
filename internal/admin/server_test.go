@@ -85,6 +85,109 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	}
 }
 
+func TestExtractProxiesRequiresAdminAuth(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract", nil)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want unauthorized", rec.Code)
+	}
+}
+
+func TestExtractProxiesReturnsJSONAndText(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	jsonReq := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&scheme=socks5&count=1", nil)
+	jsonReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	jsonRec := httptest.NewRecorder()
+
+	server.ServeHTTP(jsonRec, jsonReq)
+
+	if jsonRec.Code != http.StatusOK {
+		t.Fatalf("json status = %d body=%s", jsonRec.Code, jsonRec.Body.String())
+	}
+	var body struct {
+		Proxies []proxyExtractItem `json:"proxies"`
+	}
+	if err := json.NewDecoder(jsonRec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode json: %v", err)
+	}
+	if len(body.Proxies) != 1 || body.Proxies[0].SOCKS5 == "" || !strings.Contains(body.Proxies[0].SOCKS5, "proxy:secret@") {
+		t.Fatalf("json body = %+v, want one auth socks5 proxy", body)
+	}
+
+	textReq := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=text&scheme=no-scheme&count=1", nil)
+	textReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	textRec := httptest.NewRecorder()
+
+	server.ServeHTTP(textRec, textReq)
+
+	if textRec.Code != http.StatusOK {
+		t.Fatalf("text status = %d body=%s", textRec.Code, textRec.Body.String())
+	}
+	if got := strings.TrimSpace(textRec.Body.String()); !strings.Contains(got, "proxy:secret@") || strings.Contains(got, "://") {
+		t.Fatalf("text body = %q, want no-scheme auth proxy", got)
+	}
+}
+
+func TestExtractProxiesSkipsValidationFailures(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return context.DeadlineExceeded
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d body=%s, want bad gateway", rec.Code, rec.Body.String())
+	}
+}
+
+func TestExtractProxiesUsesConfiguredShortCache(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	cfg.ProxyExtractCacheTTL = "30s"
+	calls := 0
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		calls++
+		return nil
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&count=1", nil)
+		req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+		rec := httptest.NewRecorder()
+
+		server.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("validator calls = %d, want one call due to cache", calls)
+	}
+}
+
 func TestNodesCanFilterByRegion(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	nodes.Replace(append(nodes.List(), node.Node{ID: "us-1", Region: "us", Available: true}))
@@ -349,6 +452,33 @@ func TestSettingsCanUpdateNodeRefreshInterval(t *testing.T) {
 	}
 	if loaded.NodeRefreshInterval != "7m" {
 		t.Fatalf("node refresh interval = %q, want 7m", loaded.NodeRefreshInterval)
+	}
+}
+
+func TestSettingsCanUpdateProxyExtractCacheTTL(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Default()
+	if err := config.Save(path, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	server := NewServer(manager, nodes, nil, WithConfig(path, cfg))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/settings", bytes.NewBufferString(`{"node_refresh_interval":"20m","proxy_extract_cache_ttl":"45s"}`))
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.ProxyExtractCacheTTL != "45s" {
+		t.Fatalf("proxy extract cache ttl = %q, want 45s", loaded.ProxyExtractCacheTTL)
 	}
 }
 

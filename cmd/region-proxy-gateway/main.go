@@ -236,9 +236,100 @@ func loadNodes(ctx context.Context, cfg config.Config) ([]node.Node, error) {
 	enriched, err := (ipinfo.Client{}).Enrich(ctx, nodes)
 	if err != nil {
 		log.Printf("ip info enrich failed: %v", err)
-		return nodes, nil
+		return filterConnectableNodes(ctx, nodes, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
 	}
-	return enriched, nil
+	return filterConnectableNodes(ctx, enriched, openVPNNodeConnectivityTester{tester: deeptest.OpenVPNTester{DataDir: cfg.DataDir, Command: cfg.OpenVPNCommand}})
+}
+
+type nodeConnectivityTester interface {
+	Test(ctx context.Context, n node.Node) error
+}
+
+type nodeConnectivityTesterFunc func(ctx context.Context, n node.Node) error
+
+func (f nodeConnectivityTesterFunc) Test(ctx context.Context, n node.Node) error {
+	return f(ctx, n)
+}
+
+type openVPNNodeConnectivityTester struct {
+	tester deeptest.OpenVPNTester
+}
+
+func (t openVPNNodeConnectivityTester) Test(ctx context.Context, n node.Node) error {
+	result := t.tester.Test(ctx, n)
+	if result.Status != deeptest.StatusSuccess {
+		if result.FailReason != "" {
+			return fmt.Errorf(result.FailReason)
+		}
+		return fmt.Errorf("openvpn connectivity test failed")
+	}
+	return nil
+}
+
+func filterConnectableNodes(ctx context.Context, nodes []node.Node, tester nodeConnectivityTester) ([]node.Node, error) {
+	if tester == nil {
+		return append([]node.Node(nil), nodes...), nil
+	}
+	type result struct {
+		index int
+		node  node.Node
+		ok    bool
+	}
+	const workers = 4
+	jobs := make(chan int)
+	results := make(chan result, len(nodes))
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				n := nodes[index]
+				testCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+				err := tester.Test(testCtx, n)
+				cancel()
+				if err != nil {
+					log.Printf("drop unreachable node %s: %v", n.ID, err)
+					results <- result{index: index}
+					continue
+				}
+				n.Available = true
+				n.ProbeStatus = "available"
+				n.ProbeMessage = "openvpn connectivity verified"
+				n.FailReason = ""
+				n.LastTestedAt = time.Now()
+				n.ProbedAt = n.LastTestedAt
+				results <- result{index: index, node: n, ok: true}
+			}
+		}()
+	}
+	for index := range nodes {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(results)
+			return nil, ctx.Err()
+		case jobs <- index:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	close(results)
+
+	byIndex := make(map[int]node.Node, len(nodes))
+	for result := range results {
+		if result.ok {
+			byIndex[result.index] = result.node
+		}
+	}
+	filtered := make([]node.Node, 0, len(byIndex))
+	for index := range nodes {
+		if n, ok := byIndex[index]; ok {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered, nil
 }
 
 type proxyRuntime struct {

@@ -11,7 +11,28 @@ import (
 	"testing"
 
 	"github.com/iceqi/region-proxy-gateway/internal/config"
+	"github.com/iceqi/region-proxy-gateway/internal/node"
 )
+
+func TestLoadNodesFiltersOutUnreachableNodes(t *testing.T) {
+	ctx := context.Background()
+	nodes := []node.Node{
+		{ID: "ok-1", Region: "jp", Hostname: "ok-1", Available: true, OpenVPN: "client\n"},
+		{ID: "bad-1", Region: "jp", Hostname: "bad-1", Available: true, OpenVPN: "client\n"},
+	}
+	filtered, err := filterConnectableNodes(ctx, nodes, nodeConnectivityTesterFunc(func(ctx context.Context, n node.Node) error {
+		if n.ID == "bad-1" {
+			return fmt.Errorf("dial failed")
+		}
+		return nil
+	}))
+	if err != nil {
+		t.Fatalf("filterConnectableNodes: %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].ID != "ok-1" {
+		t.Fatalf("filtered = %+v, want only ok-1", filtered)
+	}
+}
 
 func TestBuildServicesReportsDemoNodesAndChannelProxy(t *testing.T) {
 	cfg := config.Default()

@@ -21,19 +21,20 @@ const (
 )
 
 type Config struct {
-	AdminHost           string    `json:"admin_host"`
-	AdminPort           int       `json:"admin_port"`
-	AdminPath           string    `json:"admin_path"`
-	AdminUsername       string    `json:"admin_username"`
-	AdminPassword       string    `json:"admin_password"`
-	ProxyUsername       string    `json:"proxy_username"`
-	ProxyPassword       string    `json:"proxy_password"`
-	NodeRefreshInterval string    `json:"node_refresh_interval"`
-	DataDir             string    `json:"data_dir"`
-	DatabasePath        string    `json:"database_path"`
-	OpenVPNCommand      string    `json:"openvpn_command"`
-	TunnelBackend       string    `json:"tunnel_backend"`
-	Channels            []Channel `json:"channels"`
+	AdminHost            string    `json:"admin_host"`
+	AdminPort            int       `json:"admin_port"`
+	AdminPath            string    `json:"admin_path"`
+	AdminUsername        string    `json:"admin_username"`
+	AdminPassword        string    `json:"admin_password"`
+	ProxyUsername        string    `json:"proxy_username"`
+	ProxyPassword        string    `json:"proxy_password"`
+	NodeRefreshInterval  string    `json:"node_refresh_interval"`
+	ProxyExtractCacheTTL string    `json:"proxy_extract_cache_ttl"`
+	DataDir              string    `json:"data_dir"`
+	DatabasePath         string    `json:"database_path"`
+	OpenVPNCommand       string    `json:"openvpn_command"`
+	TunnelBackend        string    `json:"tunnel_backend"`
+	Channels             []Channel `json:"channels"`
 }
 
 type Channel struct {
@@ -49,18 +50,19 @@ type Channel struct {
 
 func Default() Config {
 	return Config{
-		AdminHost:           "127.0.0.1",
-		AdminPort:           8787,
-		AdminPath:           "/admin",
-		AdminUsername:       "admin",
-		AdminPassword:       "change-me-admin",
-		ProxyUsername:       "proxy",
-		ProxyPassword:       "change-me-proxy",
-		NodeRefreshInterval: "20m",
-		DataDir:             "./data",
-		DatabasePath:        "./data/region-proxy-gateway.db",
-		OpenVPNCommand:      "openvpn",
-		TunnelBackend:       TunnelBackendFake,
+		AdminHost:            "127.0.0.1",
+		AdminPort:            8787,
+		AdminPath:            "/admin",
+		AdminUsername:        "admin",
+		AdminPassword:        "change-me-admin",
+		ProxyUsername:        "proxy",
+		ProxyPassword:        "change-me-proxy",
+		NodeRefreshInterval:  "20m",
+		ProxyExtractCacheTTL: "30s",
+		DataDir:              "./data",
+		DatabasePath:         "./data/region-proxy-gateway.db",
+		OpenVPNCommand:       "openvpn",
+		TunnelBackend:        TunnelBackendFake,
 		Channels: []Channel{
 			{
 				ID:            "jp-3000",
@@ -220,6 +222,9 @@ func (c *Config) normalize() {
 	if c.NodeRefreshInterval == "" {
 		c.NodeRefreshInterval = "20m"
 	}
+	if c.ProxyExtractCacheTTL == "" {
+		c.ProxyExtractCacheTTL = "30s"
+	}
 	for i := range c.Channels {
 		c.Channels[i].ID = strings.TrimSpace(c.Channels[i].ID)
 		c.Channels[i].Region = strings.ToLower(strings.TrimSpace(c.Channels[i].Region))
@@ -262,6 +267,9 @@ func (c Config) Validate() error {
 	if _, err := ParseNodeRefreshInterval(c.NodeRefreshInterval); err != nil {
 		return err
 	}
+	if _, err := ParseProxyExtractCacheTTL(c.ProxyExtractCacheTTL); err != nil {
+		return err
+	}
 	ports := map[int]string{c.AdminPort: "admin"}
 	ids := map[string]struct{}{}
 	for _, ch := range c.Channels {
@@ -291,6 +299,21 @@ func ParseNodeRefreshInterval(value string) (time.Duration, error) {
 	}
 	if duration <= 0 {
 		return 0, fmt.Errorf("node refresh interval must be > 0")
+	}
+	return duration, nil
+}
+
+func ParseProxyExtractCacheTTL(value string) (time.Duration, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = "30s"
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("proxy extract cache ttl is invalid: %w", err)
+	}
+	if duration < 0 {
+		return 0, fmt.Errorf("proxy extract cache ttl must be >= 0")
 	}
 	return duration, nil
 }

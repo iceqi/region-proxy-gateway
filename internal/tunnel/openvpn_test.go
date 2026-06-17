@@ -396,6 +396,37 @@ func TestOpenVPNTunnelSwitchKeepsOldNodeWhenNewNodeFailsToStart(t *testing.T) {
 	})
 }
 
+func TestOpenVPNTunnelSwitchKeepsOldNodeWhenNewNodeFailsValidation(t *testing.T) {
+	starter := &recordingProcessStarter{}
+	dialer := &deviceFailingDialer{failDevice: "rpg0n", err: errors.New("new tunnel cannot dial")}
+	dir := t.TempDir()
+	tun := NewOpenVPN(OpenVPNConfig{DataDir: dir, Starter: starter, DeviceDialer: dialer})
+	first := node.Node{ID: "jp-1", OpenVPN: "client\nremote first 1194 udp\n"}
+	second := node.Node{ID: "jp-2", OpenVPN: "client\nremote second 1194 udp\n"}
+	if err := tun.Start(context.Background(), first, Options{Name: "jp-10", DeviceName: "rpg0"}); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	err := tun.Switch(context.Background(), second)
+	if err == nil || !strings.Contains(err.Error(), "new tunnel cannot dial") {
+		t.Fatalf("Switch error = %v, want validation failure", err)
+	}
+	t.Cleanup(func() {
+		_ = tun.Stop(context.Background())
+	})
+
+	status := tun.Status()
+	if status.NodeID != "jp-1" || !status.Ready {
+		t.Fatalf("status = %+v, want old node still ready after validation failure", status)
+	}
+	if len(starter.processes) != 2 || !starter.processes[1].terminated.Load() {
+		t.Fatalf("new process should be terminated after validation failure")
+	}
+	if starter.processes[0].terminated.Load() {
+		t.Fatalf("old process should remain running after validation failure")
+	}
+}
+
 func TestOpenVPNTunnelSwitchRollsBackWhenNewNodeFailsToStart(t *testing.T) {
 	starter := &failingSecondStartProcessStarter{}
 	dir := t.TempDir()
@@ -502,6 +533,18 @@ func (d *recordingDeviceDialer) DialContext(ctx context.Context, deviceName, net
 		return nil, d.err
 	}
 	return d.conn, nil
+}
+
+type deviceFailingDialer struct {
+	failDevice string
+	err        error
+}
+
+func (d *deviceFailingDialer) DialContext(ctx context.Context, deviceName, network, address string) (net.Conn, error) {
+	if deviceName == d.failDevice {
+		return nil, d.err
+	}
+	return &dummyConn{}, nil
 }
 
 type dummyConn struct{}

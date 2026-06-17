@@ -14,6 +14,17 @@ import (
 	"github.com/iceqi/region-proxy-gateway/internal/tunnel"
 )
 
+func TestOpenVPNTesterUsesStableUniqueDeviceNames(t *testing.T) {
+	first := testDeviceName("node-a")
+	second := testDeviceName("node-b")
+	if first == second {
+		t.Fatalf("device names should differ for different nodes")
+	}
+	if len(first) > 15 || len(second) > 15 {
+		t.Fatalf("device names must fit linux interface limit: %q %q", first, second)
+	}
+}
+
 func TestOpenVPNTesterRecordsSuccessAndStopsTunnel(t *testing.T) {
 	starter := &testProcessStarter{}
 	dialer := &httpResponseDialer{body: `{"ip":"203.0.113.77","country":"Japan"}`}
