@@ -91,6 +91,12 @@ const indexHTML = `<!doctype html>
     .settings-item { padding: 14px 14px 6px; border: 1px solid #e6edf7; border-radius: 18px; background: linear-gradient(180deg, #fff, #f8fbff); }
     .settings-item .ant-form-item { margin-bottom: 10px; }
     .settings-save { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px; border-radius: 18px; background: #f8fbff; border: 1px solid #e6edf7; }
+    .gateway-panel { margin: 16px 0; padding: 16px; border: 1px solid #dbeafe; border-radius: 18px; background: linear-gradient(135deg, #f8fbff, #eff6ff); }
+    .gateway-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .gateway-title { font-weight: 800; color: #0f172a; }
+    .gateway-list { display: grid; gap: 12px; }
+    .gateway-card { padding: 12px; border: 1px solid #e2e8f0; border-radius: 16px; background: rgba(255,255,255,.86); }
+    .gateway-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
     .modal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
     .muted { color: #697386; }
@@ -308,6 +314,31 @@ const indexHTML = `<!doctype html>
                 <div class="settings-item"><a-form-item label="提取缓存 TTL"><a-input v-model:value="settings.proxy_extract_cache_ttl" placeholder="30s"></a-input></a-form-item></div>
               </div>
               <a-alert type="info" show-icon style="margin-bottom: 16px" :message="'API 提取代理：' + extractApiExample"></a-alert>
+              <div class="gateway-panel">
+                <div class="gateway-head">
+                  <div>
+                    <div class="gateway-title">旋转网关代理</div>
+                    <div class="muted">固定入口，每次新连接自动轮换出口 IP。开启通道里的“旋转网关”后会在这里显示复制链接。</div>
+                  </div>
+                  <a-tag color="blue">{{ rotatingGatewayChannels.length }} 个入口</a-tag>
+                </div>
+                <a-empty v-if="!rotatingGatewayChannels.length" description="暂无开启旋转网关的通道"></a-empty>
+                <div v-else class="gateway-list">
+                  <div v-for="channel in rotatingGatewayChannels" :key="channel.id" class="gateway-card">
+                    <div class="gateway-meta">
+                      <a-tag color="geekblue">{{ channel.id }}</a-tag>
+                      <span class="muted">端口 {{ channel.listen_port }}</span>
+                      <span class="muted">{{ channelRegionText(channel.region) }}</span>
+                      <span class="muted">当前出口 {{ channelExitAddress(channel) }}</span>
+                    </div>
+                    <div class="connection-box">
+                      <div class="connection-line"><a-tag>HTTP</a-tag><code class="mono" :title="proxyAddress(channel, 'http')">{{ proxyAddress(channel, 'http') }}</code><a-button size="small" @click="copyText(proxyAddress(channel, 'http'))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>SOCKS5</a-tag><code class="mono" :title="proxyAddress(channel, 'socks5')">{{ proxyAddress(channel, 'socks5') }}</code><a-button size="small" @click="copyText(proxyAddress(channel, 'socks5'))">复制</a-button></div>
+                      <div class="connection-line"><a-tag>NO-SCHEME</a-tag><code class="mono" :title="proxyAddressNoScheme(channel)">{{ proxyAddressNoScheme(channel) }}</code><a-button size="small" @click="copyText(proxyAddressNoScheme(channel))">复制</a-button></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div class="settings-save">
                 <span class="muted">提取 API 需要后台账号密码；支持 format=json|text、scheme=http|socks5|no-scheme、region 和 count 参数。</span>
                 <a-button @click="copyText(extractApiExample)">复制提取 URL</a-button>
@@ -460,6 +491,9 @@ const indexHTML = `<!doctype html>
         extractApiExample() {
           const token = this.settings.proxy_extract_api_token || 'YOUR_TOKEN';
           return window.location.origin + apiBase + 'proxies/extract?token=' + encodeURIComponent(token) + '&format=text&scheme=http&count=1&rotate=1';
+        },
+        rotatingGatewayChannels() {
+          return this.channels.filter(channel => channel.enabled && channel.rotate_on_dial);
         },
         switchDialogNodes() {
           if (!this.channelSwitchDialog.channel) return [];
