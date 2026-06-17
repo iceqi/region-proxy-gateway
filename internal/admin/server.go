@@ -759,19 +759,13 @@ func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([
 		}
 		s.proxyExtractMu.Unlock()
 	}
-	rotated := map[string]struct{}{}
 	if req.rotate {
-		rotated = s.rotateExtractChannels(ctx, req)
+		s.rotateExtractChannels(ctx, req)
 	}
 
 	candidates := s.extractCandidates(req)
 	items := make([]proxyExtractItem, 0, req.count)
 	for _, item := range candidates {
-		if req.rotate {
-			if _, ok := rotated[item.ChannelID]; !ok {
-				continue
-			}
-		}
 		validateCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err := s.validateExtractedProxy(validateCtx, item)
 		cancel()
