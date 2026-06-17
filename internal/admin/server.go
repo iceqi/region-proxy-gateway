@@ -1015,6 +1015,7 @@ func (s *Server) persistManualNode(ctx context.Context, snapshot channel.Snapsho
 		ListenPort:    snapshot.ListenPort,
 		Region:        snapshot.Region,
 		RotateMinutes: snapshot.RotateMinutes,
+		RotateOnDial:  snapshot.RotateOnDial,
 		SelectionMode: config.SelectionManual,
 		ManualNodeID:  nodeID,
 		Enabled:       snapshot.Enabled,
@@ -1101,6 +1102,7 @@ func (s *Server) channelViewList() []channelView {
 			snapshot.ListenPort = ch.ListenPort
 			snapshot.Region = ch.Region
 			snapshot.RotateMinutes = ch.RotateMinutes
+			snapshot.RotateOnDial = ch.RotateOnDial
 			snapshot.SelectionMode = ch.SelectionMode
 			snapshot.ManualNodeID = ch.ManualNodeID
 			snapshot.Enabled = ch.Enabled
@@ -1149,6 +1151,7 @@ func snapshotFromConfig(ch config.Channel) channel.Snapshot {
 		ListenPort:     ch.ListenPort,
 		Region:         ch.Region,
 		RotateMinutes:  ch.RotateMinutes,
+		RotateOnDial:   ch.RotateOnDial,
 		SelectionMode:  ch.SelectionMode,
 		ManualNodeID:   ch.ManualNodeID,
 		Enabled:        ch.Enabled,

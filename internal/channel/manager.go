@@ -77,6 +77,7 @@ type Snapshot struct {
 	ListenPort     int           `json:"listen_port"`
 	Region         string        `json:"region"`
 	RotateMinutes  int           `json:"rotate_minutes"`
+	RotateOnDial   bool          `json:"rotate_on_dial"`
 	SelectionMode  string        `json:"selection_mode"`
 	ManualNodeID   string        `json:"manual_node_id,omitempty"`
 	Enabled        bool          `json:"enabled"`
@@ -307,6 +308,7 @@ func (m *Manager) ConfiguredChannels() []config.Channel {
 }
 
 func (m *Manager) DialContext(ctx context.Context, channelID, network, address string) (net.Conn, error) {
+	m.rotateBeforeDial(ctx, channelID)
 	var lastErr error
 	for attempt := 0; attempt <= dialRetryCount; attempt++ {
 		tun, err := m.tunnelForDial(channelID)
@@ -328,6 +330,19 @@ func (m *Manager) DialContext(ctx context.Context, channelID, network, address s
 		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries: %v; recovery failed: %v", dialRetryCount, lastErr, err))
 		return nil, fmt.Errorf("dial failed after %d retries: %w; recovery failed: %v", dialRetryCount, lastErr, err)
 	}
+}
+
+func (m *Manager) rotateBeforeDial(ctx context.Context, channelID string) {
+	m.mu.RLock()
+	ch, ok := m.channels[channelID]
+	rotate := ok && ch.cfg.Enabled && ch.cfg.SelectionMode == SelectionAuto && ch.cfg.RotateOnDial && ch.tunnel != nil
+	m.mu.RUnlock()
+	if !rotate {
+		return
+	}
+	rotateCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	_ = m.RotateNow(rotateCtx, channelID)
 }
 
 func (m *Manager) recoverChannelAfterDialFailure(ctx context.Context, channelID, network, address string) (net.Conn, error) {
@@ -876,6 +891,7 @@ func snapshotOf(ch *runtimeChannel) Snapshot {
 		ListenPort:     ch.cfg.ListenPort,
 		Region:         ch.cfg.Region,
 		RotateMinutes:  ch.cfg.RotateMinutes,
+		RotateOnDial:   ch.cfg.RotateOnDial,
 		SelectionMode:  ch.cfg.SelectionMode,
 		ManualNodeID:   ch.cfg.ManualNodeID,
 		Enabled:        ch.cfg.Enabled,

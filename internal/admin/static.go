@@ -325,6 +325,7 @@ const indexHTML = `<!doctype html>
           <a-form-item label="端口"><a-input-number v-model:value="channelForm.listen_port" :min="1" :max="65535" style="width:100%"></a-input-number></a-form-item>
           <a-form-item label="地区"><a-input v-model:value="channelForm.region" placeholder="留空或 * 表示不限地区"></a-input></a-form-item>
           <a-form-item label="轮换分钟"><a-input-number v-model:value="channelForm.rotate_minutes" :min="0" style="width:100%"></a-input-number></a-form-item>
+          <a-form-item label="旋转网关"><a-switch v-model:checked="channelForm.rotate_on_dial"></a-switch></a-form-item>
           <a-form-item label="模式">
             <a-select v-model:value="channelForm.selection_mode">
               <a-select-option value="auto">自动优选</a-select-option>
@@ -419,7 +420,7 @@ const indexHTML = `<!doctype html>
             { title: 'ID', dataIndex: 'id', width: 120 },
             { title: '端口', dataIndex: 'listen_port', width: 84 },
             { title: '地区', dataIndex: 'region', width: 120, customRender: ({ record }) => this.channelRegionText(record.region) },
-            { title: '模式', key: 'mode', width: 150, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定')]) },
+            { title: '模式', key: 'mode', width: 170, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_on_dial ? '每次新连接轮换' : (record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定'))]) },
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
             { title: '轮换状态', key: 'rotation', width: 360, customRender: ({ record }) => this.rotationStateCell(record) },
@@ -518,7 +519,7 @@ const indexHTML = `<!doctype html>
           message.success('已退出登录');
         },
         emptyChannelForm() {
-          return { id: '', listen_host: '0.0.0.0', listen_port: 3000, region: '', rotate_minutes: 0, selection_mode: 'auto', manual_node_id: '', enabled: true };
+          return { id: '', listen_host: '0.0.0.0', listen_port: 3000, region: '', rotate_minutes: 0, rotate_on_dial: false, selection_mode: 'auto', manual_node_id: '', enabled: true };
         },
         filterNodeList(nodes, filters) {
           const keyword = String(filters.keyword || '').toLowerCase();
@@ -655,6 +656,7 @@ const indexHTML = `<!doctype html>
             listen_port: row.listen_port,
             region: row.region,
             rotate_minutes: row.rotate_minutes,
+            rotate_on_dial: row.rotate_on_dial,
             selection_mode: row.selection_mode,
             manual_node_id: row.manual_node_id || row.current_node_id || '',
             enabled: row.enabled

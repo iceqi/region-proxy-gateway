@@ -55,10 +55,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			listen_port INTEGER NOT NULL,
 			region TEXT NOT NULL,
 			rotate_minutes INTEGER NOT NULL,
+			rotate_on_dial INTEGER NOT NULL DEFAULT 0,
 			selection_mode TEXT NOT NULL,
 			manual_node_id TEXT NOT NULL,
 			enabled INTEGER NOT NULL
 		)`,
+		`ALTER TABLE channels ADD COLUMN rotate_on_dial INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS nodes (
 			id TEXT PRIMARY KEY,
 			region TEXT NOT NULL,
@@ -112,6 +114,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
 			return err
 		}
 	}
@@ -143,7 +148,7 @@ func (s *Store) MigrateChannels(ctx context.Context, channels []config.Channel) 
 }
 
 func (s *Store) ListChannels(ctx context.Context) ([]config.Channel, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, listen_host, listen_port, region, rotate_minutes, selection_mode, manual_node_id, enabled FROM channels ORDER BY listen_port, id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, listen_host, listen_port, region, rotate_minutes, rotate_on_dial, selection_mode, manual_node_id, enabled FROM channels ORDER BY listen_port, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -153,10 +158,12 @@ func (s *Store) ListChannels(ctx context.Context) ([]config.Channel, error) {
 	for rows.Next() {
 		var ch config.Channel
 		var enabled int
-		if err := rows.Scan(&ch.ID, &ch.ListenHost, &ch.ListenPort, &ch.Region, &ch.RotateMinutes, &ch.SelectionMode, &ch.ManualNodeID, &enabled); err != nil {
+		var rotateOnDial int
+		if err := rows.Scan(&ch.ID, &ch.ListenHost, &ch.ListenPort, &ch.Region, &ch.RotateMinutes, &rotateOnDial, &ch.SelectionMode, &ch.ManualNodeID, &enabled); err != nil {
 			return nil, err
 		}
 		ch.Region = strings.ToLower(strings.TrimSpace(ch.Region))
+		ch.RotateOnDial = rotateOnDial != 0
 		ch.Enabled = enabled != 0
 		channels = append(channels, ch)
 	}
@@ -185,23 +192,28 @@ func saveChannelTx(ctx context.Context, tx *sql.Tx, originalID string, ch config
 	if ch.Enabled {
 		enabled = 1
 	}
+	rotateOnDial := 0
+	if ch.RotateOnDial {
+		rotateOnDial = 1
+	}
 	if originalID != "" && originalID != ch.ID {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, originalID); err != nil {
 			return err
 		}
 	}
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO channels(id, listen_host, listen_port, region, rotate_minutes, selection_mode, manual_node_id, enabled)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO channels(id, listen_host, listen_port, region, rotate_minutes, rotate_on_dial, selection_mode, manual_node_id, enabled)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			listen_host = excluded.listen_host,
 			listen_port = excluded.listen_port,
 			region = excluded.region,
 			rotate_minutes = excluded.rotate_minutes,
+			rotate_on_dial = excluded.rotate_on_dial,
 			selection_mode = excluded.selection_mode,
 			manual_node_id = excluded.manual_node_id,
 			enabled = excluded.enabled
-	`, ch.ID, ch.ListenHost, ch.ListenPort, ch.Region, ch.RotateMinutes, ch.SelectionMode, ch.ManualNodeID, enabled)
+	`, ch.ID, ch.ListenHost, ch.ListenPort, ch.Region, ch.RotateMinutes, rotateOnDial, ch.SelectionMode, ch.ManualNodeID, enabled)
 	return err
 }
 

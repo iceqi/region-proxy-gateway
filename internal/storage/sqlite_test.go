@@ -44,6 +44,7 @@ func TestSQLiteStoreUpsertRenameAndDeleteChannels(t *testing.T) {
 	renamed := first
 	renamed.ID = "jp-main"
 	renamed.RotateMinutes = 5
+	renamed.RotateOnDial = true
 	if err := store.SaveChannel(context.Background(), "jp-3000", renamed); err != nil {
 		t.Fatalf("SaveChannel rename: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestSQLiteStoreUpsertRenameAndDeleteChannels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListChannels: %v", err)
 	}
-	if len(channels) != 1 || channels[0].ID != "jp-main" || channels[0].RotateMinutes != 5 {
+	if len(channels) != 1 || channels[0].ID != "jp-main" || channels[0].RotateMinutes != 5 || !channels[0].RotateOnDial {
 		t.Fatalf("channels = %+v, want renamed jp-main", channels)
 	}
 

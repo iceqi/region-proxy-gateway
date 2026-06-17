@@ -594,6 +594,50 @@ func TestManagerRetriesDialFailuresThenRotatesAutoChannel(t *testing.T) {
 	}
 }
 
+func TestManagerRotateOnDialSwitchesBeforeEachNewDial(t *testing.T) {
+	nodes := node.NewStore()
+	nodes.Replace([]node.Node{
+		{ID: "jp-a", Region: "jp", IP: "203.0.113.10", Speed: 100, Available: true},
+		{ID: "jp-b", Region: "jp", IP: "203.0.113.11", Speed: 90, Available: true},
+		{ID: "jp-c", Region: "jp", IP: "203.0.113.12", Speed: 80, Available: true},
+	})
+	factory := &recordingFactory{}
+	manager := NewManager(Config{
+		Channels: []config.Channel{{
+			ID:            "rotating-gateway",
+			ListenHost:    "127.0.0.1",
+			ListenPort:    3000,
+			Region:        "jp",
+			SelectionMode: SelectionAuto,
+			RotateOnDial:  true,
+			Enabled:       true,
+		}},
+		Nodes:         nodes,
+		TunnelFactory: factory.New,
+		DataDir:       t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+
+	for i := 0; i < 2; i++ {
+		conn, err := manager.DialContext(context.Background(), "rotating-gateway", "tcp", "example.com:443")
+		if err != nil {
+			t.Fatalf("DialContext %d: %v", i+1, err)
+		}
+		_ = conn.Close()
+	}
+
+	got := factory.tunnels[0].switchedNodes
+	if len(got) != 2 {
+		t.Fatalf("switched nodes = %#v, want two switches before two dials", got)
+	}
+	if got[0] == got[1] {
+		t.Fatalf("switched nodes = %#v, want different exits", got)
+	}
+}
+
 func TestManagerAutoChannelTriesNextNodeWhenRecoveredNodeStillFails(t *testing.T) {
 	nodes := node.NewStore()
 	nodes.Replace([]node.Node{

@@ -44,6 +44,7 @@ type Channel struct {
 	ListenPort    int    `json:"listen_port"`
 	Region        string `json:"region"`
 	RotateMinutes int    `json:"rotate_minutes"`
+	RotateOnDial  bool   `json:"rotate_on_dial"`
 	SelectionMode string `json:"selection_mode"`
 	ManualNodeID  string `json:"manual_node_id,omitempty"`
 	Enabled       bool   `json:"enabled"`
