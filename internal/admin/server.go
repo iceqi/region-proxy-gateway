@@ -761,6 +761,8 @@ func (s *Server) extractProxies(ctx context.Context, req proxyExtractRequest) ([
 	}
 	if req.rotate {
 		s.rotateExtractChannels(ctx, req)
+	} else {
+		s.rotateStaleExtractChannels(ctx, req)
 	}
 
 	candidates := s.extractCandidates(req)
@@ -799,6 +801,31 @@ func (s *Server) rotateExtractChannels(ctx context.Context, req proxyExtractRequ
 			continue
 		}
 		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
+			continue
+		}
+		rotateCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err := s.channels.RotateNow(rotateCtx, snapshot.ID)
+		cancel()
+		if err == nil {
+			rotated[snapshot.ID] = struct{}{}
+		}
+	}
+	return rotated
+}
+
+func (s *Server) rotateStaleExtractChannels(ctx context.Context, req proxyExtractRequest) map[string]struct{} {
+	rotated := map[string]struct{}{}
+	if s.channels == nil {
+		return rotated
+	}
+	for _, snapshot := range s.channelList() {
+		if !snapshot.Enabled || !snapshot.TunnelStatus.Ready {
+			continue
+		}
+		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
+			continue
+		}
+		if s.freshProxyNode(snapshot.CurrentNode) {
 			continue
 		}
 		rotateCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
