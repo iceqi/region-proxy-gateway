@@ -102,6 +102,9 @@ const indexHTML = `<!doctype html>
     .muted { color: #697386; }
     .host-cell { display: grid; gap: 3px; overflow-wrap: anywhere; }
     .action-row { display: flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
+    .test-cell { display: grid; gap: 6px; min-width: 0; }
+    .test-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .test-error { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .connection-box { display: grid; gap: 8px; }
     .connection-line { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 9px 10px; border: 1px solid #dbe5f0; background: linear-gradient(135deg, #f8fbff, #f1f6fb); border-radius: 12px; min-width: 0; box-shadow: inset 0 1px 0 rgba(255,255,255,.78); }
     .connection-line:hover { border-color: #93c5fd; background: #f8fbff; }
@@ -264,6 +267,7 @@ const indexHTML = `<!doctype html>
               </div>
               <div class="card-actions">
                 <span class="module-chip green">{{ channels.length }} 个通道</span>
+                <a-button :loading="channelTestingAll" @click="testAllChannels">检测全部网络</a-button>
                 <a-button type="primary" @click="openChannelDialog()">新增通道</a-button>
               </div>
             </div>
@@ -437,6 +441,7 @@ const indexHTML = `<!doctype html>
           updatingNodes: false,
           restarting: false,
           probingBatch: false,
+          channelTestingAll: false,
           deepTesting: false,
           channels: [],
           nodes: [],
@@ -451,6 +456,8 @@ const indexHTML = `<!doctype html>
           nodeSwitchDialog: { open: false, node: null, channelID: undefined },
           channelSwitchDialog: { open: false, channel: null, nodeID: undefined },
           probing: {},
+          testingChannels: {},
+          channelsAutoTested: false,
           nodeColumns: [
             { title: '地区', key: 'region', width: 110, customRender: ({ record }) => h('div', [h('div', this.regionText(record.region, record.country)), h('div', { class: 'muted' }, record.location || record.country || '')]) },
             { title: '主机 / IP', key: 'host', width: 220, customRender: ({ record }) => h('div', { class: 'host-cell' }, [h('span', { class: 'mono' }, record.hostname || '-'), h('span', { class: 'mono' }, record.ip || '-')]) },
@@ -470,6 +477,7 @@ const indexHTML = `<!doctype html>
             { title: '模式', key: 'mode', width: 170, customRender: ({ record }) => h('div', [h(antd.Tag, { color: record.selection_mode === 'manual' ? 'purple' : 'blue' }, () => this.selectionModeText(record.selection_mode)), h('span', record.rotate_on_dial ? '每次新连接轮换' : (record.rotate_minutes ? record.rotate_minutes + ' 分钟轮换' : '固定'))]) },
             { title: '当前节点', key: 'node', width: 280, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, record.current_node_id || '-'), h('div', { class: record.last_error ? '' : 'muted' }, record.last_error ? this.channelErrorText(record.last_error) : '网络失败会自动重试并切换')]) },
             { title: '出口 IP', key: 'exit', width: 160, customRender: ({ record }) => h('div', [h('div', { class: 'mono' }, this.channelExitAddress(record)), h('div', { class: 'muted' }, record.current_node && record.current_node.owner ? record.current_node.owner : '')]) },
+            { title: '网络检测', key: 'network_test', width: 230, customRender: ({ record }) => this.channelNetworkTestCell(record) },
             { title: '轮换状态', key: 'rotation', width: 360, customRender: ({ record }) => this.rotationStateCell(record) },
             { title: '连接方式', key: 'connect', width: 660, customRender: ({ record }) => h('div', { class: 'connection-box' }, [this.connectionLine('HTTP', this.proxyAddress(record, 'http')), this.connectionLine('SOCKS5', this.proxyAddress(record, 'socks5')), this.connectionLine('NO-SCHEME', this.proxyAddressNoScheme(record))]) },
             { title: '操作', key: 'actions', width: 170, fixed: 'right', customRender: ({ record }) => h('div', { class: 'action-row' }, [h(antd.Button, { size: 'small', onClick: () => this.openChannelDialog(record) }, () => '编辑'), h(antd.Button, { size: 'small', type: 'primary', onClick: () => this.openChannelSwitchDialog(record) }, () => '切换'), h(antd.Button, { size: 'small', danger: true, onClick: () => this.deleteChannel(record.id) }, () => '删除')]) }
@@ -526,6 +534,11 @@ const indexHTML = `<!doctype html>
         if (this.isLoggedIn) this.load();
         setInterval(() => this.load(false), 7000);
         setInterval(() => { this.tickNow = Date.now(); }, 1000);
+      },
+      watch: {
+        activeTab(value) {
+          if (value === 'channels') this.autoTestChannels();
+        }
       },
       methods: {
         restoreLogin() {
@@ -607,6 +620,7 @@ const indexHTML = `<!doctype html>
             this.deepStats = deepStatus.stats || this.deepStats;
             this.nodeScan = status.node_scan || this.nodeScan;
             if (status.settings) this.settings = Object.assign({}, this.settings, status.settings, { admin_password: '', proxy_password: '' });
+            if (this.activeTab === 'channels') this.autoTestChannels();
           } catch (err) {
             message.error(err.message);
           } finally {
@@ -684,6 +698,45 @@ const indexHTML = `<!doctype html>
           } finally {
             this.probingBatch = false;
           }
+        },
+        async autoTestChannels() {
+          if (this.channelsAutoTested || this.channelTestingAll || !this.channels.length) return;
+          this.channelsAutoTested = true;
+          await this.testAllChannels(false);
+        },
+        async testAllChannels(showMessage = true) {
+          if (!this.channels.length) return;
+          this.channelTestingAll = true;
+          this.channels.forEach(ch => { this.testingChannels[ch.id] = true; });
+          try {
+            const body = await this.request('channels/test', { method: 'POST' });
+            this.applyChannelTestResults(body.results || []);
+            if (showMessage) message.success('通道网络检测完成');
+            await this.load(false);
+          } catch (err) {
+            if (showMessage) message.error(err.message);
+          } finally {
+            this.channelTestingAll = false;
+            this.testingChannels = {};
+          }
+        },
+        async testChannel(channelID) {
+          this.testingChannels[channelID] = true;
+          try {
+            const body = await this.request('channels/' + encodeURIComponent(channelID) + '/test', { method: 'POST' });
+            this.applyChannelTestResults([body.result]);
+            body.result && body.result.ok ? message.success(channelID + ' 网络正常') : message.warning(channelID + ' 检测失败');
+            await this.load(false);
+          } catch (err) {
+            message.error(err.message);
+          } finally {
+            this.testingChannels[channelID] = false;
+          }
+        },
+        applyChannelTestResults(results) {
+          const byID = {};
+          (results || []).forEach(result => { if (result && result.channel_id) byID[result.channel_id] = result; });
+          this.channels = this.channels.map(ch => byID[ch.id] ? Object.assign({}, ch, { network_test: byID[ch.id] }) : ch);
         },
         async enqueueDeepTestVisibleNodes() {
           const nodeIDs = this.visibleNodes.map(n => n.id).filter(Boolean).slice(0, 500);
@@ -840,6 +893,23 @@ const indexHTML = `<!doctype html>
             this.rotationStateLine('当前出口', this.rotationExitText(record.current_exit_ip || this.channelExitAddress(record))),
             this.rotationStateLine('上次轮换', this.formatChannelTime(record.last_rotation_at)),
             this.rotationStateLine('下次轮换', this.formatChannelTime(record.next_rotation_at))
+          ]);
+        },
+        channelNetworkTestCell(record) {
+          const result = record.network_test || {};
+          const loading = Boolean(this.testingChannels[record.id]);
+          const status = result.tested_at ? (result.ok ? { color: 'green', text: '可连通' } : { color: 'red', text: '失败' }) : { color: 'default', text: '未检测' };
+          return h('div', { class: 'test-cell' }, [
+            h('div', { class: 'test-line' }, [
+              h(antd.Tag, { color: status.color }, () => status.text),
+              h('span', { class: 'mono' }, result.ok ? (result.exit_ip || '-') : (result.error ? this.shortText(result.error, 28) : '-'))
+            ]),
+            h('div', { class: 'test-line muted' }, [
+              h('span', result.latency_ms ? result.latency_ms + ' ms' : '延迟 -'),
+              h('span', result.tested_at ? this.formatChannelTime(result.tested_at) : '')
+            ]),
+            result.error && !result.ok ? h('div', { class: 'muted test-error', title: result.error }, this.shortText(result.error, 42)) : null,
+            h(antd.Button, { size: 'small', loading, onClick: () => this.testChannel(record.id) }, () => '检测网络')
           ]);
         },
         rotationStatus(record) {

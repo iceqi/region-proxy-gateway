@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -42,6 +43,9 @@ type Server struct {
 	proxyExtractCursor    map[string]int
 	proxyExtractValidator proxyExtractValidator
 	proxyExtractActivator ProxyExtractActivator
+	channelTester         channelTester
+	channelTestMu         sync.Mutex
+	channelTests          map[string]channelTestResult
 	storage               *storage.Store
 	adminPath             string
 	adminUser             string
@@ -53,6 +57,16 @@ type Option func(*Server)
 type proxyExtractValidator func(context.Context, proxyExtractItem) error
 type ProxyExtractActivator func(context.Context, ProxyExtractRequest) ([]ProxyExtractItem, error)
 type ProxyExtractItem = proxyExtractItem
+type channelTester func(context.Context, string) (channelTestResult, error)
+
+type channelTestResult struct {
+	ChannelID string `json:"channel_id"`
+	OK        bool   `json:"ok"`
+	ExitIP    string `json:"exit_ip"`
+	LatencyMS int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+	TestedAt  string `json:"tested_at"`
+}
 
 type ProxyExtractRequest struct {
 	Region string
@@ -133,15 +147,25 @@ func WithProxyExtractActivator(activator ProxyExtractActivator) Option {
 	}
 }
 
+func WithChannelTester(tester channelTester) Option {
+	return func(s *Server) {
+		s.channelTester = tester
+	}
+}
+
 func NewServer(channels *channel.Manager, nodes *node.Store, connections *connection.Tracker, opts ...Option) *Server {
 	server := &Server{
-		channels:    channels,
-		nodes:       nodes,
-		connections: connections,
-		adminPath:   "/admin",
+		channels:     channels,
+		nodes:        nodes,
+		connections:  connections,
+		channelTests: map[string]channelTestResult{},
+		adminPath:    "/admin",
 	}
 	for _, opt := range opts {
 		opt(server)
+	}
+	if server.channelTester == nil {
+		server.channelTester = server.testChannelViaIPInfo
 	}
 	return server
 }
@@ -174,6 +198,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/channels/") && strings.HasSuffix(r.URL.Path, "/switch") {
 		s.handleSwitch(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/channels/test" {
+		s.handleTestChannels(w, r)
+		return
+	}
+	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/channels/") && strings.HasSuffix(r.URL.Path, "/test") {
+		s.handleTestChannel(w, r)
 		return
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/channels" {
@@ -362,6 +394,120 @@ func (s *Server) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		"channel":          snapshot,
 		"channel_reloaded": true,
 	})
+}
+
+func (s *Server) handleTestChannel(w http.ResponseWriter, r *http.Request) {
+	channelID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/channels/"), "/test")
+	channelID = strings.Trim(channelID, "/")
+	if channelID == "" {
+		s.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "channel id is required"})
+		return
+	}
+	result, err := s.testChannel(r.Context(), channelID)
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{"result": result})
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"result": result})
+}
+
+func (s *Server) handleTestChannels(w http.ResponseWriter, r *http.Request) {
+	results := make([]channelTestResult, 0, len(s.channelList()))
+	for _, snapshot := range s.channelList() {
+		result, err := s.testChannel(r.Context(), snapshot.ID)
+		if err != nil {
+			results = append(results, result)
+			continue
+		}
+		results = append(results, result)
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
+func (s *Server) testChannel(ctx context.Context, channelID string) (channelTestResult, error) {
+	if s.channelTester == nil {
+		return channelTestResult{}, fmt.Errorf("channel tester is not configured")
+	}
+	result, err := s.channelTester(ctx, channelID)
+	s.channelTestMu.Lock()
+	if s.channelTests == nil {
+		s.channelTests = map[string]channelTestResult{}
+	}
+	if result.ChannelID == "" {
+		result.ChannelID = channelID
+	}
+	if result.TestedAt == "" {
+		result.TestedAt = time.Now().Format(time.RFC3339)
+	}
+	if err != nil {
+		result.OK = false
+		if result.Error == "" {
+			result.Error = err.Error()
+		}
+	}
+	s.channelTests[channelID] = result
+	s.channelTestMu.Unlock()
+	return result, err
+}
+
+func (s *Server) channelTestSnapshot(channelID string) channelTestResult {
+	s.channelTestMu.Lock()
+	defer s.channelTestMu.Unlock()
+	return s.channelTests[channelID]
+}
+
+func (s *Server) testChannelViaIPInfo(ctx context.Context, channelID string) (channelTestResult, error) {
+	startedAt := time.Now()
+	result := channelTestResult{ChannelID: channelID, TestedAt: startedAt.Format(time.RFC3339)}
+	if s.channels == nil {
+		result.Error = "channels unavailable"
+		return result, fmt.Errorf(result.Error)
+	}
+	testCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return s.channels.DialContext(ctx, channelID, network, address)
+		},
+		ForceAttemptHTTP2:     false,
+		TLSHandshakeTimeout:   8 * time.Second,
+		ResponseHeaderTimeout: 8 * time.Second,
+		IdleConnTimeout:       5 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 12 * time.Second}
+	req, err := http.NewRequestWithContext(testCtx, http.MethodGet, "https://ipinfo.io/ip", nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		result.Error = err.Error()
+		result.LatencyMS = time.Since(startedAt).Milliseconds()
+		return result, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 128))
+	if err != nil {
+		result.Error = err.Error()
+		result.LatencyMS = time.Since(startedAt).Milliseconds()
+		return result, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		result.Error = fmt.Sprintf("ipinfo returned status %d", resp.StatusCode)
+		result.LatencyMS = time.Since(startedAt).Milliseconds()
+		return result, fmt.Errorf(result.Error)
+	}
+	result.ExitIP = strings.TrimSpace(string(raw))
+	result.LatencyMS = time.Since(startedAt).Milliseconds()
+	result.OK = result.ExitIP != ""
+	if !result.OK {
+		result.Error = "ipinfo returned empty ip"
+		return result, fmt.Errorf(result.Error)
+	}
+	return result, nil
 }
 
 func (s *Server) handleSaveChannel(w http.ResponseWriter, r *http.Request) {
@@ -1264,8 +1410,9 @@ func isSystemProxyChannel(id string) bool {
 
 type channelView struct {
 	channel.Snapshot
-	ProxyAuthHTTP   string `json:"proxy_auth_http"`
-	ProxyAuthSOCKS5 string `json:"proxy_auth_socks5"`
+	ProxyAuthHTTP   string            `json:"proxy_auth_http"`
+	ProxyAuthSOCKS5 string            `json:"proxy_auth_socks5"`
+	NetworkTest     channelTestResult `json:"network_test"`
 }
 
 func (s *Server) channelViewList() []channelView {
@@ -1306,7 +1453,7 @@ func (s *Server) channelViewList() []channelView {
 			snapshot.ProxyURLHTTP = fmt.Sprintf("http://%s:%d", ch.ListenHost, ch.ListenPort)
 			snapshot.ProxyURLSOCKS5 = fmt.Sprintf("socks5://%s:%d", ch.ListenHost, ch.ListenPort)
 		}
-		view := channelView{Snapshot: snapshot}
+		view := channelView{Snapshot: snapshot, NetworkTest: s.channelTestSnapshot(snapshot.ID)}
 		if proxyUser != "" || proxyPass != "" {
 			routeUser := proxyRegionUsername(proxyUser, snapshot.Region)
 			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
@@ -1319,7 +1466,7 @@ func (s *Server) channelViewList() []channelView {
 		if _, ok := seen[snapshot.ID]; ok {
 			continue
 		}
-		view := channelView{Snapshot: snapshot}
+		view := channelView{Snapshot: snapshot, NetworkTest: s.channelTestSnapshot(snapshot.ID)}
 		if proxyUser != "" || proxyPass != "" {
 			routeUser := proxyRegionUsername(proxyUser, snapshot.Region)
 			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)

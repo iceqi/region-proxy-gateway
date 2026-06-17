@@ -87,6 +87,103 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	}
 }
 
+func TestChannelTestEndpointStoresResultInChannelList(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithChannelTester(func(ctx context.Context, channelID string) (channelTestResult, error) {
+		return channelTestResult{ChannelID: channelID, OK: true, ExitIP: "203.0.113.77", LatencyMS: 42, TestedAt: time.Now().Format(time.RFC3339)}, nil
+	}))
+
+	testReq := httptest.NewRequest(http.MethodPost, "/admin/api/channels/jp-3000/test", nil)
+	testReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	testRec := httptest.NewRecorder()
+
+	server.ServeHTTP(testRec, testReq)
+
+	if testRec.Code != http.StatusOK {
+		t.Fatalf("test status = %d body=%s", testRec.Code, testRec.Body.String())
+	}
+	var testBody struct {
+		Result channelTestResult `json:"result"`
+	}
+	if err := json.NewDecoder(testRec.Body).Decode(&testBody); err != nil {
+		t.Fatalf("decode test result: %v", err)
+	}
+	if !testBody.Result.OK || testBody.Result.ExitIP != "203.0.113.77" || testBody.Result.ChannelID != "jp-3000" {
+		t.Fatalf("result = %+v, want successful jp-3000 test", testBody.Result)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/admin/api/channels", nil)
+	listReq.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	listRec := httptest.NewRecorder()
+	server.ServeHTTP(listRec, listReq)
+	var listBody struct {
+		Channels []channelView `json:"channels"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listBody); err != nil {
+		t.Fatalf("decode channel list: %v", err)
+	}
+	if len(listBody.Channels) != 1 || listBody.Channels[0].NetworkTest.ExitIP != "203.0.113.77" {
+		t.Fatalf("channels = %+v, want stored network test result", listBody.Channels)
+	}
+}
+
+func TestChannelBatchTestEndpointTestsAllVisibleChannels(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	calls := map[string]int{}
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithChannelTester(func(ctx context.Context, channelID string) (channelTestResult, error) {
+		calls[channelID]++
+		return channelTestResult{ChannelID: channelID, OK: true, ExitIP: "198.51.100.88", LatencyMS: 10, TestedAt: time.Now().Format(time.RFC3339)}, nil
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels/test", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Results []channelTestResult `json:"results"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Results) != 1 || calls["jp-3000"] != 1 {
+		t.Fatalf("results = %+v calls=%+v, want one tested channel", body.Results, calls)
+	}
+}
+
+func TestChannelTestEndpointReturnsFailedResult(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	cfg := config.Default()
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithChannelTester(func(ctx context.Context, channelID string) (channelTestResult, error) {
+		return channelTestResult{ChannelID: channelID, TestedAt: time.Now().Format(time.RFC3339)}, context.DeadlineExceeded
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/api/channels/jp-3000/test", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want ok with failed result", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Result channelTestResult `json:"result"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Result.OK || body.Result.Error == "" {
+		t.Fatalf("result = %+v, want failed result with error", body.Result)
+	}
+}
+
 func TestExtractProxiesRequiresAdminAuth(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	cfg := config.Default()
@@ -956,7 +1053,7 @@ func TestIndexReturnsHTML(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "重启服务") || !strings.Contains(rec.Body.String(), "system/restart") {
 		t.Fatalf("admin html should include service restart button")
 	}
-	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "module-card", "section-icon", "module-chip", "table-shell", "settings-grid", "settings-save", "rememberCredentials", "adminAuth", "apiBase + 'proxies/extract", "rotate=1", "旋转网关", "rotate_on_dial", "每次新连接轮换", "旋转网关代理", "节点扫描", "extract_proxy_http", "rotating_gateway_http"} {
+	for _, text := range []string{"content-panel", "text-overflow: ellipsis", "title: value", "测试当前列表延迟", "nodes/probe-batch", "深度测试当前列表", "deep-tests/status", "出口 IP", "channelExitAddress", "normalizeRegion", "候选通道", "matchChannelRegion", "tickNow", "秒", "NO-SCHEME", "proxyAddressNoScheme", "hero-strip", "signal-dot", "login-card", "login-stage", "login-orbit", "login-metrics", "module-card", "section-icon", "module-chip", "table-shell", "settings-grid", "settings-save", "rememberCredentials", "adminAuth", "apiBase + 'proxies/extract", "rotate=1", "旋转网关", "rotate_on_dial", "每次新连接轮换", "旋转网关代理", "节点扫描", "extract_proxy_http", "rotating_gateway_http", "检测全部网络", "检测网络", "channels/test", "network_test"} {
 		if !strings.Contains(rec.Body.String(), text) {
 			t.Fatalf("admin html missing layout safeguard %q", text)
 		}
