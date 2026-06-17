@@ -308,28 +308,83 @@ func (m *Manager) ConfiguredChannels() []config.Channel {
 }
 
 func (m *Manager) DialContext(ctx context.Context, channelID, network, address string) (net.Conn, error) {
-	m.rotateBeforeDial(ctx, channelID)
+	baseChannelID, routeRegion := splitRouteChannelID(channelID)
+	if routeRegion != "" {
+		m.routeRegionBeforeDial(ctx, baseChannelID, routeRegion)
+	} else {
+		m.rotateBeforeDial(ctx, baseChannelID)
+	}
 	var lastErr error
 	for attempt := 0; attempt <= dialRetryCount; attempt++ {
-		tun, err := m.tunnelForDial(channelID)
+		tun, err := m.tunnelForDial(baseChannelID)
 		if err != nil {
 			return nil, err
 		}
 		conn, err := tun.DialContext(ctx, network, address)
 		if err == nil {
-			m.clearError(channelID)
+			m.clearError(baseChannelID)
 			return conn, nil
 		}
 		lastErr = err
 	}
 
-	if conn, err := m.recoverChannelAfterDialFailure(ctx, channelID, network, address); err == nil {
-		m.clearError(channelID)
+	if conn, err := m.recoverChannelAfterDialFailure(ctx, baseChannelID, network, address); err == nil {
+		m.clearError(baseChannelID)
 		return conn, nil
 	} else {
-		m.setChannelError(channelID, fmt.Sprintf("dial failed after %d retries: %v; recovery failed: %v", dialRetryCount, lastErr, err))
+		m.setChannelError(baseChannelID, fmt.Sprintf("dial failed after %d retries: %v; recovery failed: %v", dialRetryCount, lastErr, err))
 		return nil, fmt.Errorf("dial failed after %d retries: %w; recovery failed: %v", dialRetryCount, lastErr, err)
 	}
+}
+
+func splitRouteChannelID(channelID string) (string, string) {
+	base, suffix, ok := strings.Cut(channelID, "#region=")
+	if !ok {
+		return channelID, ""
+	}
+	return base, strings.ToLower(strings.TrimSpace(suffix))
+}
+
+func (m *Manager) routeRegionBeforeDial(ctx context.Context, channelID string, region string) {
+	if region == "" {
+		return
+	}
+	rotateCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[channelID]
+	if !ok || !ch.cfg.Enabled || ch.tunnel == nil {
+		return
+	}
+	if ch.currentNode.ID != "" && (isAnyRegion(region) || ch.currentNode.Region == region) {
+		if n, ok := m.bestCheckedNode(rotateCtx, region, ch.currentNode.ID); ok {
+			_ = m.switchRouteNodeLocked(rotateCtx, ch, n)
+		}
+		return
+	}
+	if n, ok := m.bestCheckedNode(rotateCtx, region, ""); ok {
+		_ = m.switchRouteNodeLocked(rotateCtx, ch, n)
+	}
+}
+
+func (m *Manager) switchRouteNodeLocked(ctx context.Context, ch *runtimeChannel, n node.Node) error {
+	if n.ID == "" || ch.currentNode.ID == n.ID {
+		return nil
+	}
+	if err := ch.tunnel.Switch(ctx, n); err != nil {
+		ch.err = err.Error()
+		return err
+	}
+	now := time.Now()
+	ch.lastNode = ch.currentNode
+	ch.currentNode = n
+	ch.startedAt = now
+	ch.lastRotationAt = now
+	ch.err = ""
+	m.recordUse(ctx, ch.cfg.ID, n, now, now)
+	return nil
 }
 
 func (m *Manager) rotateBeforeDial(ctx context.Context, channelID string) {

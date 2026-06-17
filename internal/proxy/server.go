@@ -33,6 +33,11 @@ type Server struct {
 	socks5Handler socks5HandlerFunc
 }
 
+type authContext struct {
+	Username string
+	Region   string
+}
+
 func NewServer(listenAddr string, channelID string, proxyUsername string, proxyPassword string, dialer Dialer, connections *connection.Tracker) *Server {
 	server := &Server{
 		ListenAddr:    listenAddr,
@@ -71,18 +76,36 @@ func (s *Server) Serve(listener net.Listener) error {
 	}
 }
 
-func (s *Server) authenticate(username, password string) error {
+func (s *Server) authenticate(username, password string) (authContext, error) {
 	s.authMu.RLock()
 	proxyUsername := s.ProxyUsername
 	proxyPassword := s.ProxyPassword
 	s.authMu.RUnlock()
-	if proxyUsername != "" && username != proxyUsername {
-		return errors.New("invalid proxy credentials")
+	baseUsername, region := splitUsernameRegion(username, proxyUsername)
+	if proxyUsername != "" && baseUsername != proxyUsername {
+		return authContext{}, errors.New("invalid proxy credentials")
 	}
 	if !CheckPassword(password, proxyPassword) {
-		return errors.New("invalid proxy credentials")
+		return authContext{}, errors.New("invalid proxy credentials")
 	}
-	return nil
+	return authContext{Username: baseUsername, Region: region}, nil
+}
+
+func splitUsernameRegion(username, baseUsername string) (string, string) {
+	for _, separator := range []string{"+", "-", "_"} {
+		prefix := baseUsername + separator
+		if baseUsername != "" && len(username) > len(prefix) && username[:len(prefix)] == prefix {
+			return baseUsername, username[len(prefix):]
+		}
+	}
+	return username, ""
+}
+
+func (s *Server) routeID(auth authContext) string {
+	if auth.Region == "" {
+		return s.ChannelID
+	}
+	return s.ChannelID + "#region=" + auth.Region
 }
 
 func (s *Server) handleConn(conn net.Conn) {

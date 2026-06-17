@@ -25,38 +25,41 @@ func (s *Server) handleHTTP(conn net.Conn, firstByte byte) {
 		return
 	}
 
-	if !s.authenticateHTTPRequest(req) {
+	auth, ok := s.authenticateHTTPRequest(req)
+	if !ok {
 		writeProxyAuthRequired(conn)
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
 	if req.Method == http.MethodConnect {
-		s.handleHTTPConnect(conn, reader, req)
+		s.handleHTTPConnect(conn, reader, req, auth)
 		return
 	}
-	s.handlePlainHTTP(conn, req)
+	s.handlePlainHTTP(conn, req, auth)
 }
 
-func (s *Server) authenticateHTTPRequest(req *http.Request) bool {
+func (s *Server) authenticateHTTPRequest(req *http.Request) (authContext, bool) {
 	credentials, ok := ParseBasicProxyAuthorization(req.Header.Get("Proxy-Authorization"))
 	if !ok {
-		return false
+		return authContext{}, false
 	}
-	if err := s.authenticate(credentials.Username, credentials.Password); err != nil {
-		return false
+	auth, err := s.authenticate(credentials.Username, credentials.Password)
+	if err != nil {
+		return authContext{}, false
 	}
-	return true
+	return auth, true
 }
 
-func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *http.Request) {
+func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *http.Request, auth authContext) {
 	target := req.Host
 	if target == "" {
 		writeHTTPError(client, http.StatusBadRequest)
 		return
 	}
 
-	upstream, ok := s.dialHTTPUpstream(client, req.Context(), target)
+	routeID := s.routeID(auth)
+	upstream, ok := s.dialHTTPUpstream(client, req.Context(), routeID, target)
 	if !ok {
 		return
 	}
@@ -66,17 +69,18 @@ func (s *Server) handleHTTPConnect(client net.Conn, reader *bufio.Reader, req *h
 		return
 	}
 
-	s.trackAndRelay(client, upstream, reader, s.ChannelID, target)
+	s.trackAndRelay(client, upstream, reader, routeID, target)
 }
 
-func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request) {
+func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request, auth authContext) {
 	target, err := proxyRequestTarget(req)
 	if err != nil {
 		writeHTTPError(client, http.StatusBadRequest)
 		return
 	}
 
-	upstream, ok := s.dialHTTPUpstream(client, req.Context(), target)
+	routeID := s.routeID(auth)
+	upstream, ok := s.dialHTTPUpstream(client, req.Context(), routeID, target)
 	if !ok {
 		return
 	}
@@ -88,15 +92,15 @@ func (s *Server) handlePlainHTTP(client net.Conn, req *http.Request) {
 	req.URL.Scheme = ""
 	req.URL.Host = ""
 
-	s.trackPlainHTTP(client, upstream, req, s.ChannelID, target)
+	s.trackPlainHTTP(client, upstream, req, routeID, target)
 }
 
-func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, target string) (net.Conn, bool) {
+func (s *Server) dialHTTPUpstream(client net.Conn, ctx context.Context, routeID string, target string) (net.Conn, bool) {
 	if s.dialer == nil {
 		writeHTTPError(client, http.StatusBadGateway)
 		return nil, false
 	}
-	upstream, err := s.dialer.DialContext(ctx, s.ChannelID, "tcp", target)
+	upstream, err := s.dialer.DialContext(ctx, routeID, "tcp", target)
 	if err != nil {
 		writeHTTPError(client, http.StatusBadGateway)
 		return nil, false

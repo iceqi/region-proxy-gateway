@@ -49,6 +49,27 @@ func TestSOCKS5ValidAuthAndDomainConnectSucceeds(t *testing.T) {
 	}
 }
 
+func TestSOCKS5UsernameRegionRoutesDialer(t *testing.T) {
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	dialer.dialResult <- fakeDial{conn: upstream}
+
+	go server.handleSOCKS5(proxy)
+
+	negotiateSOCKS5Auth(t, client, "proxy+jp", "secret", true)
+	writeSOCKS5ConnectDomain(t, client, 0x01, "example.com", 443)
+	assertSOCKS5Response(t, client, []byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	upstreamPeer.Close()
+
+	if dialer.gotChannelID != "jp-3000#region=jp" {
+		t.Fatalf("dial route = %q, want region route", dialer.gotChannelID)
+	}
+}
+
 func TestSOCKS5ConnectSupportsIPv4AndIPv6(t *testing.T) {
 	tests := []struct {
 		name        string

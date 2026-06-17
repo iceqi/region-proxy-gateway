@@ -77,7 +77,7 @@ func TestChannelsReturnsSnapshots(t *testing.T) {
 	if body.Channels[0].ID != "jp-3000" {
 		t.Fatalf("channel id = %q, want jp-3000", body.Channels[0].ID)
 	}
-	if body.Channels[0].ProxyAuthHTTP != "http://alice:secret@0.0.0.0:3000" {
+	if body.Channels[0].ProxyAuthHTTP != "http://alice+jp:secret@0.0.0.0:3000" {
 		t.Fatalf("auth http = %q", body.Channels[0].ProxyAuthHTTP)
 	}
 	if body.Channels[0].CurrentNode.IP == "" && body.Channels[0].CurrentNode.Hostname == "" {
@@ -160,7 +160,7 @@ func TestExtractProxiesReturnsJSONAndText(t *testing.T) {
 	if err := json.NewDecoder(jsonRec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode json: %v", err)
 	}
-	if len(body.Proxies) != 1 || body.Proxies[0].SOCKS5 == "" || !strings.Contains(body.Proxies[0].SOCKS5, "proxy:secret@") {
+	if len(body.Proxies) != 1 || body.Proxies[0].SOCKS5 == "" || !strings.Contains(body.Proxies[0].SOCKS5, "proxy+jp:secret@") {
 		t.Fatalf("json body = %+v, want one auth socks5 proxy", body)
 	}
 
@@ -173,8 +173,41 @@ func TestExtractProxiesReturnsJSONAndText(t *testing.T) {
 	if textRec.Code != http.StatusOK {
 		t.Fatalf("text status = %d body=%s", textRec.Code, textRec.Body.String())
 	}
-	if got := strings.TrimSpace(textRec.Body.String()); !strings.Contains(got, "proxy:secret@") || strings.Contains(got, "://") {
+	if got := strings.TrimSpace(textRec.Body.String()); !strings.Contains(got, "proxy+jp:secret@") || strings.Contains(got, "://") {
 		t.Fatalf("text body = %q, want no-scheme auth proxy", got)
+	}
+}
+
+func TestExtractProxiesUsesRegionUsernameAndNodePool(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	nodes.Replace([]node.Node{
+		{ID: "jp-fresh", Region: "jp", IP: "203.0.113.11", Hostname: "jp-fresh", Available: true, LastTestedAt: time.Now()},
+		{ID: "us-fresh", Region: "us", IP: "203.0.113.12", Hostname: "us-fresh", Available: true, LastTestedAt: time.Now()},
+	})
+	cfg := config.Default()
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&scheme=http&region=jp&count=1", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Proxies []proxyExtractItem `json:"proxies"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode json: %v", err)
+	}
+	if len(body.Proxies) != 1 || body.Proxies[0].CurrentExitIP != "203.0.113.11" || !strings.Contains(body.Proxies[0].HTTP, "proxy+jp:secret@") {
+		t.Fatalf("proxies = %+v, want jp node with region username", body.Proxies)
 	}
 }
 

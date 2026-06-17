@@ -36,7 +36,8 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	defer conn.Close()
 
 	reader := bufio.NewReader(conn)
-	if !s.negotiateSOCKS5Auth(conn, reader) {
+	auth, ok := s.negotiateSOCKS5Auth(conn, reader)
+	if !ok {
 		return
 	}
 
@@ -51,7 +52,8 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
-	upstream, ok := s.dialSOCKS5Upstream(conn, context.Background(), target)
+	routeID := s.routeID(auth)
+	upstream, ok := s.dialSOCKS5Upstream(conn, context.Background(), routeID, target)
 	if !ok {
 		return
 	}
@@ -61,42 +63,43 @@ func (s *Server) handleSOCKS5(conn net.Conn) {
 		return
 	}
 
-	s.trackAndRelaySOCKS5(conn, upstream, reader, s.ChannelID, target)
+	s.trackAndRelaySOCKS5(conn, upstream, reader, routeID, target)
 }
 
-func (s *Server) negotiateSOCKS5Auth(conn net.Conn, reader *bufio.Reader) bool {
+func (s *Server) negotiateSOCKS5Auth(conn net.Conn, reader *bufio.Reader) (authContext, bool) {
 	methodCount, err := reader.ReadByte()
 	if err != nil {
-		return false
+		return authContext{}, false
 	}
 
 	methods := make([]byte, int(methodCount))
 	if _, err := io.ReadFull(reader, methods); err != nil {
-		return false
+		return authContext{}, false
 	}
 
 	if !bytesContain(methods, socks5AuthUsernamePassword) {
 		_, _ = conn.Write([]byte{socks5Version, socks5NoAcceptableMethods})
-		return false
+		return authContext{}, false
 	}
 	if _, err := conn.Write([]byte{socks5Version, socks5AuthUsernamePassword}); err != nil {
-		return false
+		return authContext{}, false
 	}
 
 	username, password, ok := readSOCKS5UsernamePassword(reader)
 	if !ok {
 		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
-		return false
+		return authContext{}, false
 	}
 
-	if err := s.authenticate(username, password); err != nil {
+	auth, err := s.authenticate(username, password)
+	if err != nil {
 		_, _ = conn.Write([]byte{socks5AuthVersion, socks5AuthFailure})
-		return false
+		return authContext{}, false
 	}
 	if _, err := conn.Write([]byte{socks5AuthVersion, socks5AuthSuccess}); err != nil {
-		return false
+		return authContext{}, false
 	}
-	return true
+	return auth, true
 }
 
 func readSOCKS5UsernamePassword(reader *bufio.Reader) (string, string, bool) {
@@ -173,12 +176,12 @@ func readSOCKS5LengthPrefixedString(reader *bufio.Reader) (string, bool) {
 	return string(value), true
 }
 
-func (s *Server) dialSOCKS5Upstream(client net.Conn, ctx context.Context, target string) (net.Conn, bool) {
+func (s *Server) dialSOCKS5Upstream(client net.Conn, ctx context.Context, routeID string, target string) (net.Conn, bool) {
 	if s.dialer == nil {
 		_, _ = client.Write(socks5GeneralFailureResponse)
 		return nil, false
 	}
-	upstream, err := s.dialer.DialContext(ctx, s.ChannelID, "tcp", target)
+	upstream, err := s.dialer.DialContext(ctx, routeID, "tcp", target)
 	if err != nil {
 		_, _ = client.Write(socks5GeneralFailureResponse)
 		return nil, false

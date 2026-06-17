@@ -38,6 +38,7 @@ type Server struct {
 	configMu              sync.Mutex
 	proxyExtractMu        sync.Mutex
 	proxyExtract          proxyExtractCache
+	proxyExtractCursor    map[string]int
 	proxyExtractValidator proxyExtractValidator
 	storage               *storage.Store
 	adminPath             string
@@ -853,34 +854,101 @@ func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
 	password := s.config.ProxyPassword
 	s.configMu.Unlock()
 
-	snapshots := s.channelList()
-	items := make([]proxyExtractItem, 0, len(snapshots))
-	for _, snapshot := range snapshots {
-		if !snapshot.Enabled || !snapshot.TunnelStatus.Ready {
-			continue
-		}
-		if !s.freshProxyNode(snapshot.CurrentNode) {
-			continue
-		}
-		if req.region != "" && req.region != "*" && snapshot.Region != req.region {
-			continue
-		}
-		host := proxyPublicHost(snapshot.ListenHost, req.host)
-		noScheme := proxyAuthHost(username, password, host, snapshot.ListenPort)
+	entry, ok := s.proxyEntrySnapshot(req)
+	if !ok {
+		return nil
+	}
+	nodes := s.freshProxyNodes(req.region)
+	if req.rotate {
+		nodes = s.rotateProxyNodeOrder(req, nodes)
+	}
+	items := make([]proxyExtractItem, 0, len(nodes))
+	for _, n := range nodes {
+		host := proxyPublicHost(entry.ListenHost, req.host)
+		routeUsername := proxyRegionUsername(username, n.Region)
+		noScheme := proxyAuthHost(routeUsername, password, host, entry.ListenPort)
 		items = append(items, proxyExtractItem{
-			ChannelID:     snapshot.ID,
-			Region:        snapshot.Region,
-			CurrentExitIP: snapshot.CurrentExitIP,
+			ChannelID:     entry.ID,
+			Region:        n.Region,
+			CurrentExitIP: nodeExitIP(n),
 			HTTP:          "http://" + noScheme,
 			SOCKS5:        "socks5://" + noScheme,
 			NoScheme:      noScheme,
-			listenHost:    snapshot.ListenHost,
-			listenPort:    snapshot.ListenPort,
-			username:      username,
+			listenHost:    entry.ListenHost,
+			listenPort:    entry.ListenPort,
+			username:      routeUsername,
 			password:      password,
 		})
 	}
 	return items
+}
+
+func (s *Server) proxyEntrySnapshot(req proxyExtractRequest) (channel.Snapshot, bool) {
+	snapshots := s.channelList()
+	for _, snapshot := range snapshots {
+		if snapshot.Enabled && snapshot.TunnelStatus.Ready {
+			return snapshot, true
+		}
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Enabled {
+			return snapshot, true
+		}
+	}
+	return channel.Snapshot{}, false
+}
+
+func (s *Server) freshProxyNodes(region string) []node.Node {
+	if s.nodes == nil {
+		return nil
+	}
+	nodes := s.nodes.List()
+	fresh := make([]node.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if region != "" && region != "*" && n.Region != region {
+			continue
+		}
+		if s.freshProxyNode(n) {
+			fresh = append(fresh, n)
+		}
+	}
+	return fresh
+}
+
+func proxyRegionUsername(username string, region string) string {
+	region = strings.ToLower(strings.TrimSpace(region))
+	if region == "" || region == "*" {
+		return username
+	}
+	return username + "+" + region
+}
+
+func nodeExitIP(n node.Node) string {
+	if n.IP != "" {
+		return n.IP
+	}
+	return n.Hostname
+}
+
+func (s *Server) rotateProxyNodeOrder(req proxyExtractRequest, nodes []node.Node) []node.Node {
+	if len(nodes) <= 1 {
+		return nodes
+	}
+	key := req.region
+	if key == "" {
+		key = "*"
+	}
+	s.proxyExtractMu.Lock()
+	if s.proxyExtractCursor == nil {
+		s.proxyExtractCursor = map[string]int{}
+	}
+	start := s.proxyExtractCursor[key] % len(nodes)
+	s.proxyExtractCursor[key] = (start + 1) % len(nodes)
+	s.proxyExtractMu.Unlock()
+	ordered := make([]node.Node, 0, len(nodes))
+	ordered = append(ordered, nodes[start:]...)
+	ordered = append(ordered, nodes[:start]...)
+	return ordered
 }
 
 func (s *Server) freshProxyNode(n node.Node) bool {
@@ -982,7 +1050,7 @@ func proxyValidationHost(listenHost string) string {
 func proxyAuthHost(username string, password string, host string, port int) string {
 	auth := ""
 	if username != "" || password != "" {
-		auth = url.QueryEscape(username) + ":" + url.QueryEscape(password) + "@"
+		auth = url.PathEscape(username) + ":" + url.PathEscape(password) + "@"
 	}
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
@@ -1155,8 +1223,9 @@ func (s *Server) channelViewList() []channelView {
 		}
 		view := channelView{Snapshot: snapshot}
 		if proxyUser != "" || proxyPass != "" {
-			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", proxyUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
-			view.ProxyAuthSOCKS5 = fmt.Sprintf("socks5://%s:%s@%s:%d", proxyUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+			routeUser := proxyRegionUsername(proxyUser, snapshot.Region)
+			view.ProxyAuthHTTP = fmt.Sprintf("http://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
+			view.ProxyAuthSOCKS5 = fmt.Sprintf("socks5://%s:%s@%s:%d", routeUser, proxyPass, snapshot.ListenHost, snapshot.ListenPort)
 		}
 		views = append(views, view)
 	}

@@ -73,6 +73,31 @@ func TestHTTPConnectWithValidAuthCreatesSessionAndReturns200(t *testing.T) {
 	}
 }
 
+func TestHTTPConnectUsernameRegionRoutesDialer(t *testing.T) {
+	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
+	server := newHTTPTestServer(dialer)
+	client, proxy := net.Pipe()
+	defer client.Close()
+	upstream, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	dialer.dialResult <- fakeDial{conn: upstream}
+
+	go server.handleHTTP(proxy, 'C')
+
+	if _, err := io.WriteString(client, "ONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nProxy-Authorization: "+basicAuth("proxy+jp", "secret")+"\r\n\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	resp := readHTTPResponse(t, client)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want ok", resp.StatusCode)
+	}
+	upstreamPeer.Close()
+	if dialer.gotChannelID != "jp-3000#region=jp" {
+		t.Fatalf("dial route = %q, want region route", dialer.gotChannelID)
+	}
+}
+
 func TestHTTPConnectRelaysBytesThroughTunnelDialer(t *testing.T) {
 	dialer := &fakeDialer{dialResult: make(chan fakeDial, 1)}
 	server := newHTTPTestServer(dialer)

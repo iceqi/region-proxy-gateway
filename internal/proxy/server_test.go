@@ -32,6 +32,12 @@ func TestServerAuthenticate(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name:      "valid proxy credentials with region suffix",
+			username:  "proxy+jp",
+			password:  "secret",
+			wantError: false,
+		},
+		{
 			name:      "wrong password",
 			username:  "proxy",
 			password:  "wrong",
@@ -47,7 +53,7 @@ func TestServerAuthenticate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := server.authenticate(tt.username, tt.password)
+			auth, err := server.authenticate(tt.username, tt.password)
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("authenticate returned nil error")
@@ -56,6 +62,9 @@ func TestServerAuthenticate(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatalf("authenticate returned error: %v", err)
+			}
+			if tt.username == "proxy+jp" && auth.Region != "jp" {
+				t.Fatalf("auth region = %q, want jp", auth.Region)
 			}
 		})
 	}
