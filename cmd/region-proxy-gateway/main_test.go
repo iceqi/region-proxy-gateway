@@ -268,6 +268,46 @@ func TestExtractAPIActivatesMultipleDynamicProxyPortsPerCall(t *testing.T) {
 	}
 }
 
+func TestDynamicExtractRuntimeDeduplicatesExitIPPerCall(t *testing.T) {
+	nodes := node.NewStore()
+	now := time.Now()
+	nodes.Replace([]node.Node{
+		{ID: "jp-1", Region: "jp", IP: "203.0.113.11", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+		{ID: "jp-duplicate", Region: "jp", IP: "203.0.113.11", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+		{ID: "jp-2", Region: "jp", IP: "203.0.113.12", Available: true, LastTestedAt: now, OpenVPN: "client\n"},
+	})
+	manager := channel.NewManager(channel.Config{
+		Channels: []config.Channel{},
+		Nodes:    nodes,
+		TunnelFactory: func(name string) tunnel.Tunnel {
+			return &failingNodeTunnel{}
+		},
+		DataDir: t.TempDir(),
+	})
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("manager start: %v", err)
+	}
+	defer manager.Stop(context.Background())
+	cfg := config.Default()
+	cfg.ProxyExtractAPIHost = "127.0.0.1"
+	runtime := newDynamicExtractRuntime(cfg, manager, connection.NewTracker(), nodes)
+
+	items, err := runtime.Activate(context.Background(), admin.ProxyExtractRequest{Region: "jp", Host: "203.0.113.99", Count: 3})
+	if err != nil {
+		t.Fatalf("Activate returned error: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want only two unique exit IPs", items)
+	}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		if _, ok := seen[item.CurrentExitIP]; ok {
+			t.Fatalf("duplicate exit ip returned: %+v", items)
+		}
+		seen[item.CurrentExitIP] = struct{}{}
+	}
+}
+
 func TestDynamicExtractRuntimeSkipsFailedNodeAndKeepsOldPort(t *testing.T) {
 	nodes := node.NewStore()
 	now := time.Now()

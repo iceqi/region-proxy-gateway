@@ -1068,6 +1068,7 @@ func (s *Server) extractCandidates(req proxyExtractRequest) []proxyExtractItem {
 	if req.rotate {
 		nodes = s.rotateProxyNodeOrder(req, nodes)
 	}
+	nodes = dedupeNodesByExitIP(nodes)
 	items := make([]proxyExtractItem, 0, len(nodes))
 	for _, n := range nodes {
 		host := proxyPublicHost(entry.ListenHost, req.host)
@@ -1160,6 +1161,23 @@ func (s *Server) rotateProxyNodeOrder(req proxyExtractRequest, nodes []node.Node
 	ordered = append(ordered, nodes[start:]...)
 	ordered = append(ordered, nodes[:start]...)
 	return ordered
+}
+
+func dedupeNodesByExitIP(nodes []node.Node) []node.Node {
+	seen := map[string]struct{}{}
+	filtered := make([]node.Node, 0, len(nodes))
+	for _, n := range nodes {
+		exitIP := nodeExitIP(n)
+		if exitIP == "" {
+			continue
+		}
+		if _, ok := seen[exitIP]; ok {
+			continue
+		}
+		seen[exitIP] = struct{}{}
+		filtered = append(filtered, n)
+	}
+	return filtered
 }
 
 func (s *Server) freshProxyNode(n node.Node) bool {

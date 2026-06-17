@@ -310,6 +310,42 @@ func TestExtractProxiesUsesRegionUsernameAndNodePool(t *testing.T) {
 	}
 }
 
+func TestExtractProxiesDeduplicatesDuplicateExitIPs(t *testing.T) {
+	nodes, manager := newAdminTestManager(t)
+	nodes.Replace([]node.Node{
+		{ID: "jp-1", Region: "jp", IP: "203.0.113.11", Hostname: "jp-1", Available: true, LastTestedAt: time.Now()},
+		{ID: "jp-dup", Region: "jp", IP: "203.0.113.11", Hostname: "jp-dup", Available: true, LastTestedAt: time.Now()},
+		{ID: "jp-2", Region: "jp", IP: "203.0.113.12", Hostname: "jp-2", Available: true, LastTestedAt: time.Now()},
+	})
+	cfg := config.Default()
+	cfg.ProxyUsername = "proxy"
+	cfg.ProxyPassword = "secret"
+	server := NewServer(manager, nodes, nil, WithConfig("", cfg), WithProxyExtractorValidator(func(ctx context.Context, proxy proxyExtractItem) error {
+		return nil
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/api/proxies/extract?format=json&scheme=http&region=jp&count=3", nil)
+	req.SetBasicAuth(cfg.AdminUsername, cfg.AdminPassword)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Proxies []proxyExtractItem `json:"proxies"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode json: %v", err)
+	}
+	if len(body.Proxies) != 2 {
+		t.Fatalf("proxies = %+v, want only unique exit IPs", body.Proxies)
+	}
+	if body.Proxies[0].CurrentExitIP == body.Proxies[1].CurrentExitIP {
+		t.Fatalf("duplicate exit IP returned: %+v", body.Proxies)
+	}
+}
+
 func TestExtractProxiesSkipsValidationFailures(t *testing.T) {
 	nodes, manager := newAdminTestManager(t)
 	cfg := config.Default()

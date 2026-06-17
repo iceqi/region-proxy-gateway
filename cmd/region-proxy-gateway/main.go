@@ -611,7 +611,7 @@ func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExt
 		count = 1
 	}
 	items := make([]admin.ProxyExtractItem, 0, count)
-	selected := map[string]struct{}{}
+	selectedExitIPs := map[string]struct{}{}
 	var lastErr error
 	for len(items) < count {
 		candidates, err := r.selectNodes(req.Region)
@@ -623,13 +623,17 @@ func (r *dynamicExtractRuntime) Activate(ctx context.Context, req admin.ProxyExt
 		}
 		progressed := false
 		for _, node := range candidates {
-			if _, ok := selected[node.ID]; ok {
+			exitIP := dynamicNodeExitIP(node)
+			if exitIP == "" {
+				continue
+			}
+			if _, ok := selectedExitIPs[exitIP]; ok {
 				continue
 			}
 			activated, err := r.activateNode(ctx, req, node)
 			if err == nil {
 				items = append(items, activated...)
-				selected[node.ID] = struct{}{}
+				selectedExitIPs[exitIP] = struct{}{}
 				progressed = true
 				if len(items) >= count {
 					return items, nil
